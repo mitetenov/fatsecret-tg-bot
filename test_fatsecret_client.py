@@ -13,7 +13,6 @@ from fatsecret_client import (
     FatSecretAPIError,
     FatSecretAuthError,
     FatSecretClient,
-    FatSecretError,
     FatSecretNotFoundError,
     FatSecretRateLimitError,
     _to_gtin13,
@@ -57,6 +56,10 @@ class TestBarcodeConversion:
 
     def test_strips_whitespace(self):
         assert _to_gtin13("  0078742097833\n") == "0078742097833"
+
+    def test_non_digit_barcode_raises(self):
+        with pytest.raises(ValueError, match="Barcode must be all digits"):
+            _to_gtin13("abc123def4567")
 
 
 # ---------------------------------------------------------------------------

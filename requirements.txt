@@ -1,4 +1,3 @@
 python-telegram-bot==22.*
-requests-oauthlib==2.*
 Pillow==11.*
 pyzbar==0.1.*

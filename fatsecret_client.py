@@ -287,6 +287,8 @@ def _handle_response(resp: requests.Response) -> dict[str, Any]:
 def _to_gtin13(barcode: str) -> str:
     """Normalize to GTIN-13 (13 digits)."""
     barcode = barcode.strip()
+    if not barcode.isdigit():
+        raise ValueError(f"Barcode must be all digits, got: {barcode!r}")
     if len(barcode) == 13:
         return barcode
     if len(barcode) == 12:
