@@ -1,5 +1,5 @@
 python-telegram-bot==22.*
-requests-oauthlib==2.*
 Pillow==11.*
 pyzbar==0.1.*
-openai>=1.0
+requests==2.*
+requests-oauthlib==2.*
