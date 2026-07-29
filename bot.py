@@ -201,6 +201,39 @@ def build_direct_photo_handler() -> ConversationHandler:
     )
 
 
+# -- App builder -----------------------------------------------------------
+
+
+def build_app(token: str) -> Application:
+    """Create and wire up the PTB Application with all handlers registered."""
+    app = Application.builder().token(token).build()
+
+    # -- Simple command handlers --------------------------------------
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+
+    # -- /log command (show today's entries) --------------------------
+    app.add_handler(CommandHandler("log", log_show))
+
+    # -- /log inline keyboard handlers (refresh, delete) --------------
+    app.add_handler(
+        CallbackQueryHandler(log_callback, pattern="^(refresh_log|delete_entry:)")
+    )
+
+    # -- ConversationHandlers (multi-step flows) ----------------------
+    # Order matters: more specific handlers first
+    app.add_handler(build_add_handler())
+    app.add_handler(build_photo_handler())
+    app.add_handler(build_barcode_handler())
+    app.add_handler(build_log_handler())  # edit flow
+
+    # -- Direct photo ConversationHandler (uncaptioned photos) -------
+    # Tries barcode first, then food recognition, with full conversation flow
+    app.add_handler(build_direct_photo_handler())
+
+    return app
+
+
 # -- Main ------------------------------------------------------------------
 
 
@@ -228,30 +261,7 @@ def main() -> None:
     )
 
     # Build the Application
-    app = Application.builder().token(cfg.bot_token).build()
-
-    # -- Simple command handlers --------------------------------------
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-
-    # -- /log command (show today's entries) --------------------------
-    app.add_handler(CommandHandler("log", log_show))
-
-    # -- /log inline keyboard handlers (refresh, delete) --------------
-    app.add_handler(
-        CallbackQueryHandler(log_callback, pattern="^(refresh_log|delete_entry:)")
-    )
-
-    # -- ConversationHandlers (multi-step flows) ----------------------
-    # Order matters: more specific handlers first
-    app.add_handler(build_add_handler())
-    app.add_handler(build_photo_handler())
-    app.add_handler(build_barcode_handler())
-    app.add_handler(build_log_handler())  # edit flow
-
-    # -- Direct photo ConversationHandler (uncaptioned photos) -------
-    # Tries barcode first, then food recognition, with full conversation flow
-    app.add_handler(build_direct_photo_handler())
+    app = build_app(cfg.bot_token)
 
     logger.info("Bot is polling ...")
     app.run_polling(allowed_updates=None)
