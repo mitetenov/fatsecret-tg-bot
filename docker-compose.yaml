@@ -1,9 +1,0 @@
-services:
-  fatsecret-bot:
-    image: mitetenov/fatsecret-tg-bot:latest
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - FATSECRET_API_KEY=${FATSECRET_API_KEY}
-      - FATSECRET_API_SECRET=${FATSECRET_API_SECRET}
-      - AI_API_KEY=${AI_API_KEY}
-    restart: unless-stopped

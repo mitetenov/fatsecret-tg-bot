@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+.dockerignore
+Dockerfile
+docker-compose*.yml
+
+# Data (mounted at runtime)
+data/
+
+# Docs
+README.md

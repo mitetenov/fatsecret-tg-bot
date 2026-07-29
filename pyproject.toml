@@ -1,0 +1,8 @@
+[tool.pytest.ini_options]
+testpaths = ["."]
+markers = [
+    "asyncio: mark a test as an async test",
+]
+
+[tool.pytest-asyncio]
+asyncio_mode = "auto"
