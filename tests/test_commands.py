@@ -521,3 +521,26 @@ class TestHandlerBuilders:
         handler = log_cmd.build_log_handler()
         assert handler is not None
         assert handler.name == "edit_log"
+
+    def test_build_direct_photo_handler(self):
+        """build_direct_photo_handler returns a ConversationHandler with the correct name."""
+        import bot
+
+        handler = bot.build_direct_photo_handler()
+        assert handler is not None
+        assert handler.name == "direct_photo"
+        assert len(handler.entry_points) == 1
+        assert len(handler.states) == 3  # CONFIRMING_FOOD, ENTERING_QUANTITY, SELECTING_UNIT
+        assert len(handler.fallbacks) == 1
+
+
+class TestBotModule:
+    """Tests for the bot.py module's general structure."""
+
+    def test_main_imports(self):
+        """bot.py module-level imports work correctly."""
+        import bot
+
+        assert hasattr(bot, "main")
+        assert hasattr(bot, "build_direct_photo_handler")
+        assert hasattr(bot, "direct_photo_start")
