@@ -1,0 +1,34 @@
+services:
+  bot:
+    build: .
+    container_name: fatsecret-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - FATSECRET_CLIENT_ID=${FATSECRET_CLIENT_ID}
+      - FATSECRET_CLIENT_SECRET=${FATSECRET_CLIENT_SECRET}
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - AI_MODEL=${AI_MODEL:-gpt-4o}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/bot.db}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - bot_data:/app/data
+
+  # Optional: PostgreSQL for production
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: fatsecret-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: fatsecret
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+  #     POSTGRES_DB: fatsecret_bot
+  #   volumes:
+  #     - pg_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
+
+volumes:
+  bot_data:
+  # pg_data:
