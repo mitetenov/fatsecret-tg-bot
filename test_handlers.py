@@ -175,8 +175,10 @@ class TestBarcodeHandler:
     @classmethod
     def setup_class(cls):
         """Create a minimal valid PNG for use in tests."""
-        import struct, zlib
+        import struct
+        import zlib
         sig = b'\x89PNG\r\n\x1a\n'
+
         def chunk(ctype, data):
             c = ctype + data
             return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)

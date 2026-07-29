@@ -1,0 +1,27 @@
+services:
+  fatsecret-bot:
+    build: .
+    image: mitetenov/fatsecret-tg-bot:latest
+    container_name: fatsecret-tg-bot
+
+    # SQLite database persistence — keep your cache across restarts
+    volumes:
+      - bot-data:/app/data
+
+    # Read secrets from a .env file in the same directory.
+    # Copy .env.example → .env and fill in real values.
+    env_file:
+      - .env
+
+    # Alternatively, pass them inline (env_file is recommended):
+    # environment:
+    #   - BOT_TOKEN=${BOT_TOKEN}
+    #   - FATSECRET_API_KEY=${FATSECRET_API_KEY}
+    #   - FATSECRET_API_SECRET=${FATSECRET_API_SECRET}
+    #   - AI_API_KEY=${AI_API_KEY}
+
+    restart: unless-stopped
+
+volumes:
+  bot-data:
+    driver: local

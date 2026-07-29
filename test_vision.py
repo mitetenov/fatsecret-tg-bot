@@ -69,7 +69,13 @@ class TestVisionClient:
         mock_response.choices = [
             MagicMock(
                 message=MagicMock(
-                    content='```json\n{"food_name": "Salad", "calories": 300, "protein": 15.0, "fat": 20.0, "carbs": 10.0, "serving_size": "1 plate"}\n```'
+                    content=(
+                        '```json\n'
+                        '{"food_name": "Salad", "calories": 300, '
+                        '"protein": 15.0, "fat": 20.0, "carbs": 10.0, '
+                        '"serving_size": "1 plate"}\n'
+                        '```'
+                    )
                 )
             )
         ]
@@ -108,7 +114,11 @@ class TestVisionClient:
         mock_response.choices = [
             MagicMock(
                 message=MagicMock(
-                    content='{"food_name": "Test", "calories": 100, "protein": 5.0, "fat": 5.0, "carbs": 5.0, "serving_size": "100g"}'
+                    content=(
+                        '{"food_name": "Test", "calories": 100, '
+                        '"protein": 5.0, "fat": 5.0, "carbs": 5.0, '
+                        '"serving_size": "100g"}'
+                    )
                 )
             )
         ]

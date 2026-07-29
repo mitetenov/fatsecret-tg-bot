@@ -15,7 +15,6 @@ from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
-    ConversationHandler,
     MessageHandler,
     filters,
 )
@@ -25,7 +24,7 @@ from handlers.help import help_cmd
 from handlers.photo import photo_cmd, sessions
 from handlers.search import search_cmd
 from handlers.start import start
-from keyboards import build_food_results_keyboard, build_serving_keyboard
+from keyboards import build_serving_keyboard
 from fatsecret_client import FatSecretClient, FatSecretError
 
 logging.basicConfig(
