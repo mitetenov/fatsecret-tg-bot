@@ -40,6 +40,25 @@ class CacheDB:
             )
             """
         )
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS food_log (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id             INTEGER NOT NULL,
+                food_id             TEXT NOT NULL,
+                food_name           TEXT NOT NULL,
+                serving_description TEXT NOT NULL DEFAULT '',
+                amount_raw          TEXT NOT NULL DEFAULT '',
+                amount_grams        REAL NOT NULL DEFAULT 0,
+                servings_multiplier REAL NOT NULL DEFAULT 1.0,
+                calories            REAL NOT NULL DEFAULT 0,
+                protein             REAL NOT NULL DEFAULT 0,
+                fat                 REAL NOT NULL DEFAULT 0,
+                carbs               REAL NOT NULL DEFAULT 0,
+                logged_at           REAL NOT NULL
+            )
+            """
+        )
         self._conn.commit()
 
     def close(self) -> None:
@@ -85,3 +104,106 @@ class CacheDB:
             (query, json.dumps(results), time.time()),
         )
         self._conn.commit()
+
+    # -- food log -------------------------------------------------------------
+
+    def log_food(
+        self,
+        user_id: int,
+        food_id: str,
+        food_name: str,
+        *,
+        serving_description: str = "",
+        amount_raw: str = "",
+        amount_grams: float = 0.0,
+        servings_multiplier: float = 1.0,
+        calories: float = 0.0,
+        protein: float = 0.0,
+        fat: float = 0.0,
+        carbs: float = 0.0,
+    ) -> int:
+        """Insert a food log entry and return the row ``id``."""
+        cur = self._conn.execute(
+            """
+            INSERT INTO food_log (user_id, food_id, food_name, serving_description,
+                                  amount_raw, amount_grams, servings_multiplier,
+                                  calories, protein, fat, carbs, logged_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                food_id,
+                food_name,
+                serving_description,
+                amount_raw,
+                amount_grams,
+                servings_multiplier,
+                calories,
+                protein,
+                fat,
+                carbs,
+                time.time(),
+            ),
+        )
+        self._conn.commit()
+        lid = cur.lastrowid
+        assert lid is not None, "lastrowid must not be None after INSERT"
+        return lid
+
+    def get_user_log(
+        self, user_id: int, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Return recent food log entries for ``user_id``, newest first."""
+        rows = self._conn.execute(
+            """
+            SELECT id, user_id, food_id, food_name, serving_description,
+                   amount_raw, amount_grams, servings_multiplier,
+                   calories, protein, fat, carbs, logged_at
+            FROM food_log
+            WHERE user_id = ?
+            ORDER BY logged_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "user_id": r[1],
+                "food_id": r[2],
+                "food_name": r[3],
+                "serving_description": r[4],
+                "amount_raw": r[5],
+                "amount_grams": r[6],
+                "servings_multiplier": r[7],
+                "calories": r[8],
+                "protein": r[9],
+                "fat": r[10],
+                "carbs": r[11],
+                "logged_at": r[12],
+            }
+            for r in rows
+        ]
+
+    def get_daily_totals(self, user_id: int) -> dict[str, float]:
+        """Return total KBJU for ``user_id`` today (UTC)."""
+        day_start = time.time() - (time.time() % 86400)
+        row = self._conn.execute(
+            """
+            SELECT COALESCE(SUM(calories), 0),
+                   COALESCE(SUM(protein), 0),
+                   COALESCE(SUM(fat), 0),
+                   COALESCE(SUM(carbs), 0)
+            FROM food_log
+            WHERE user_id = ? AND logged_at >= ?
+            """,
+            (user_id, day_start),
+        ).fetchone()
+        if row is None:
+            return {"calories": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0}
+        return {
+            "calories": row[0],
+            "protein": row[1],
+            "fat": row[2],
+            "carbs": row[3],
+        }

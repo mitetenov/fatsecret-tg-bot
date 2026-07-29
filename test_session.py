@@ -50,6 +50,82 @@ class TestUserSession:
         assert sess.analysis is None
         assert sess.state == "idle"
 
+    def test_select_serving_stores_details(self):
+        from session import UserSession
+
+        sess = UserSession(user_id=1)
+        sess.select_serving(
+            serving_id="s1",
+            description="100g",
+            grams=100.0,
+            calories=50.0,
+            protein=5.0,
+            fat=2.0,
+            carbs=10.0,
+        )
+        assert sess.selected_serving_id == "s1"
+        assert sess.selected_serving_desc == "100g"
+        assert sess.selected_serving_grams == 100.0
+        assert sess.serving_calories == 50.0
+        assert sess.state == "awaiting_amount"
+
+    def test_set_amount_calculates_multiplier(self):
+        from session import UserSession
+
+        sess = UserSession(user_id=1)
+        sess.selected_serving_grams = 100.0
+        sess.set_amount("200g", 200.0)
+        assert sess.amount_raw == "200g"
+        assert sess.amount_grams == 200.0
+        assert sess.servings_multiplier == 2.0
+
+    def test_set_amount_zero_grams_defaults_to_one(self):
+        from session import UserSession
+
+        sess = UserSession(user_id=1)
+        sess.selected_serving_grams = 0.0
+        sess.set_amount("1 plate", 0.0)
+        assert sess.servings_multiplier == 1.0
+
+    def test_get_calculated_kbju_scales_correctly(self):
+        from session import UserSession
+
+        sess = UserSession(user_id=1)
+        sess.serving_calories = 100.0
+        sess.serving_protein = 10.0
+        sess.serving_fat = 5.0
+        sess.serving_carbs = 20.0
+        sess.selected_serving_grams = 100.0
+        sess.set_amount("150g", 150.0)
+
+        kbju = sess.get_calculated_kbju()
+        assert kbju["calories"] == 150.0
+        assert kbju["protein"] == 15.0
+        assert kbju["fat"] == 7.5
+        assert kbju["carbs"] == 30.0
+
+    def test_set_default_serving(self):
+        from session import UserSession
+
+        sess = UserSession(user_id=1)
+        assert sess.default_serving_size == "100g"
+        sess.set_default_serving("200ml")
+        assert sess.default_serving_size == "200ml"
+
+    def test_reset_clears_amount_fields(self):
+        from session import UserSession
+
+        sess = UserSession(user_id=1)
+        sess.select_serving("s1", "100g", 100.0, 50.0, 5.0, 2.0, 10.0)
+        sess.set_amount("150g", 150.0)
+        sess.reset()
+
+        assert sess.selected_serving_id is None
+        assert sess.amount_raw is None
+        assert sess.amount_grams == 0.0
+        assert sess.servings_multiplier == 1.0
+        assert sess.state == "idle"
+
 
 class TestSessionManager:
     """SessionManager — per-user session registry."""

@@ -31,7 +31,8 @@ class TestBotApplication:
 
         app = build_app("dummy-token")
 
-        # At least 6 handlers expected:
-        # /start, /help, /search, /photo, /barcode, ConversationHandler (for callbacks)
-        assert mock_app.add_handler.call_count >= 5
+        # At least 10 handlers expected:
+        # /start, /help, /search, /photo, /barcode, /setamount, /cancel,
+        # ConversationHandler (amount input), CallbackQueryHandler, MessageHandler (photos)
+        assert mock_app.add_handler.call_count >= 10
         assert app is mock_app

@@ -22,7 +22,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/search <food> — search the FatSecret database\n"
         "/photo — send a food photo, I'll estimate KBJU with AI\n"
         "/barcode — send a barcode photo, I'll look it up\n"
-        "/help — show this message again\n\n"
+        "/setamount <size> — set your default serving size (e.g. 100g)\n"
+        "/help — show this message again\n"
+        "/cancel — cancel the current operation\n\n"
         "Just send me a photo any time and I'll analyse it! 🍎"
     )
     await update.message.reply_text(text)
