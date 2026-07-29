@@ -12,10 +12,8 @@ class TestBotApplication:
     @patch("bot.CommandHandler")
     @patch("bot.MessageHandler")
     @patch("bot.CallbackQueryHandler")
-    @patch("bot.ConversationHandler")
     def test_build_app_registers_all_handlers(
         self,
-        mock_conv,
         mock_cb,
         mock_msg,
         mock_cmd,
@@ -26,12 +24,8 @@ class TestBotApplication:
         mock_app = MagicMock()
         mock_app_cls.builder.return_value.token.return_value.build.return_value = mock_app
 
-        # ConversationHandler should return a handler-like object
-        mock_conv.return_value = MagicMock()
-
         app = build_app("dummy-token")
 
-        # At least 6 handlers expected:
-        # /start, /help, /search, /photo, /barcode, ConversationHandler (for callbacks)
-        assert mock_app.add_handler.call_count >= 5
+        # At least 5 command handlers + 1 callback handler + 1 photo handler = 7
+        assert mock_app.add_handler.call_count >= 7
         assert app is mock_app
