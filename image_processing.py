@@ -65,20 +65,17 @@ def _identify_foods_with_gemini(
     image_data: bytes, api_key: str, model: str = "gemini-2.0-flash"
 ) -> list[dict]:
     """Send *image_data* to Gemini Vision and return a list of food dicts."""
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        logger.error("google-generativeai not installed – cannot use Gemini Vision")
-        raise RuntimeError("Gemini Vision support not installed") from None
+    from google import genai
 
-    genai.configure(api_key=api_key)
-    gemini = genai.GenerativeModel(model)
+    import io
 
-    response = gemini.generate_content(
-        [
-            _GEMINI_FOOD_PROMPT,
-            {"mime_type": "image/jpeg", "data": image_data},
-        ]
+    import PIL.Image
+
+    client = genai.Client(api_key=api_key)
+    img = PIL.Image.open(io.BytesIO(image_data))
+    response = client.models.generate_content(
+        model=model,
+        contents=[_GEMINI_FOOD_PROMPT, img],
     )
 
     raw = (response.text or "").strip()

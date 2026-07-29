@@ -23,25 +23,25 @@ services:
     volumes:
       - bot_data:/app/data
 
-  # PostgreSQL service for production deployments
-  # Uncomment and set DATABASE_URL=postgresql://fatsecret:${DB_PASSWORD}@db:5432/fatsecret_bot
-  db:
-    image: postgres:16-alpine
-    container_name: fatsecret-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: fatsecret
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-      POSTGRES_DB: fatsecret_bot
-    volumes:
-      - pg_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fatsecret -d fatsecret_bot"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # PostgreSQL service — opt-in for production deployments.
+  # Uncomment below and set DATABASE_URL=postgresql://fatsecret:***@db:5432/fatsecret_bot
+  # db:
+  #   image: postgres:16-alpine
+  #   container_name: fatsecret-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: fatsecret
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+  #     POSTGRES_DB: fatsecret_bot
+  #   volumes:
+  #     - pg_data:/var/lib/postgresql/data
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U fatsecret -d fatsecret_bot"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
 volumes:
   bot_data:

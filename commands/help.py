@@ -15,4 +15,4 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Just send a photo without a command — the bot will try to scan\n"
         "a barcode first, then fall back to food recognition."
     )
-    await update.message.reply_markdown(msg)
+    await update.message.reply_text(msg, parse_mode="Markdown")

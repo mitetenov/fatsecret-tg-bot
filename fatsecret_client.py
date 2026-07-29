@@ -111,7 +111,14 @@ def search_foods(
     resp.raise_for_status()
     data = _check_fatsecret_error(resp.json(), f"Food search for '{query}'")
 
-    foods = data.get("foods_search", data.get("foods", {})).get("food", [])
+    foods_search = data.get("foods_search")
+    if foods_search is not None:
+        foods = foods_search.get("food", [])
+    else:
+        logger.warning(
+            "'foods_search' key not in response, falling back to 'foods' key"
+        )
+        foods = data.get("foods", {}).get("food", [])
     if isinstance(foods, dict):  # single result is not wrapped in a list
         foods = [foods]
     return foods

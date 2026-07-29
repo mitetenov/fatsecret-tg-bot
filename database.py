@@ -86,10 +86,12 @@ def get_engine():
         db_url = cfg.database_url
         if db_url.startswith("sqlite"):
             # Ensure the data directory exists
-            if "///" in db_url:
-                db_path = db_url.split("///", 1)[1]
-            else:
-                db_path = db_url.split(":///", 1)[1]
+            from urllib.parse import urlparse
+
+            parsed = urlparse(db_url)
+            db_path = parsed.path
+            if db_path.startswith("/"):
+                db_path = db_path.lstrip("/")
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         _engine = create_engine(db_url, echo=cfg.debug)
     return _engine
