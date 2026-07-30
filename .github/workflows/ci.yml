@@ -19,12 +19,13 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # Тесты гоняем в том же образе, который поедет в прод, — иначе «у меня работало»
-      # означает «работало в другом окружении».
+      # Стадия test стоит на том же venv и том же базовом образе, что и прод, —
+      # отличается только наличием pytest и тестов. В прод-образ они не едут.
       - name: Собрать образ для тестов
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: test
           load: true
           tags: fsbot:ci
           cache-from: type=gha
