@@ -3,11 +3,17 @@ services:
     image: mitetenov/fsbot:latest
     restart: unless-stopped
     env_file: [.env]
+    # Именованный том, а не ./data: bind-mount на чистом сервере создаётся от root,
+    # а процесс работает под uid 10001 — sqlite падал с «unable to open database file».
+    # Том наследует владельца из образа, где /data уже принадлежит fsbot.
     volumes:
-      - ./data:/data
+      - fsbot-data:/data
     healthcheck:
       test: ["CMD-SHELL", "find /data/heartbeat -mmin -2 | grep -q heartbeat"]
       interval: 60s
       timeout: 5s
       retries: 2
       start_period: 30s
+
+volumes:
+  fsbot-data:

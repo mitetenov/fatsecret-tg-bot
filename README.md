@@ -46,8 +46,30 @@ docker compose ps         # healthy / unhealthy по свежести heartbeat
 docker compose logs -f bot
 ```
 
-Состояние — SQLite, heartbeat и кеш access-токена — лежит в `./data`, примонтированном
-в `/data`, и переживает обновление образа.
+Состояние — SQLite и heartbeat — лежит в именованном томе `fsbot-data` и переживает
+обновление образа. Именно том, а не каталог `./data`: bind-mount на чистом сервере
+создаётся от root, процесс работает под uid 10001, и SQLite падает с `unable to open
+database file`. Том наследует владельца из образа. На macOS этого не видно — Docker
+Desktop подменяет владельца, поэтому баг ловится только на настоящем Linux-сервере.
+
+Бэкап и перенос состояния:
+
+```bash
+# выгрузить
+docker run --rm -v fatsecret-tg-bot_fsbot-data:/data -v "$PWD:/backup" \
+  alpine tar czf /backup/fsbot-data.tgz -C /data .
+
+# залить обратно (или перенести со старой машины)
+docker run --rm -v fatsecret-tg-bot_fsbot-data:/data -v "$PWD:/backup" \
+  alpine sh -c 'tar xzf /backup/fsbot-data.tgz -C /data'
+```
+
+Если состояние уже накоплено в `./data` (до перехода на том), перенеси его один раз:
+
+```bash
+docker run --rm -v "$PWD/data:/from" -v fatsecret-tg-bot_fsbot-data:/to \
+  alpine sh -c 'cp -a /from/. /to/'
+```
 
 > ⚠️ Не запускай `docker compose config`: команда разворачивает `env_file` и печатает
 > ключи в терминал. Для проверки синтаксиса есть `docker compose config --quiet`.
