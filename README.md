@@ -54,12 +54,15 @@ docker compose logs -f bot
 
 ### Тесты и спайк
 
-Тесты и спайк лежат внутри того же образа, но в compose их нет — это не сервисы:
+Тесты, pytest и спайк живут в отдельной стадии `test` и в публикуемый образ не
+попадают — он от этого на 35 МБ легче. Стадия стоит на том же venv и том же базовом
+образе, так что окружение совпадает с прод-образом:
 
 ```bash
-docker run --rm --network none mitetenov/fsbot:latest python -m pytest -q
-docker run --rm -it --env-file .env -v "$PWD/data:/data" mitetenov/fsbot:latest \
-  python spike/check_fatsecret.py --two-legged-only
+docker build --target test -t fsbot:test .
+docker run --rm --network none fsbot:test                       # тесты
+docker run --rm -it --env-file .env -v "$PWD/data:/data" fsbot:test \
+  python spike/check_fatsecret.py --two-legged-only             # спайк
 ```
 
 Без `--write` спайк ничего в аккаунте FatSecret не меняет.
