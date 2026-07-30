@@ -1,0 +1,18 @@
+# Секреты и состояние — никогда в репозиторий.
+.env
+*.db
+*.sqlite3
+.spike-token.json
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# состояние контейнеров
+data/
+
+# артефакты сборки пакета
+*.egg-info/
