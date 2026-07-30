@@ -36,6 +36,21 @@ PUBLIC_COMMANDS = [
 OWNER_COMMANDS = [*PUBLIC_COMMANDS, BotCommand(command="allow", description="открыть доступ")]
 
 
+HEARTBEAT_PERIOD = 30
+
+
+async def _heartbeat(path) -> None:
+    """Отметка «цикл опроса жив».
+
+    Бот однажды молча лёг с кодом 0, и заметил это человек, а не система: снаружи
+    работающий и упавший процесс выглядят одинаково. Свежесть этого файла проверяет
+    healthcheck контейнера.
+    """
+    while True:
+        path.touch()
+        await asyncio.sleep(HEARTBEAT_PERIOD)
+
+
 async def run() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -64,9 +79,12 @@ async def run() -> None:
     me = await bot.me()
     log.info("бот @%s запущен, режим ограниченный (Basic: без штрих-кодов)", me.username)
 
+    heartbeat = asyncio.create_task(_heartbeat(config.state_dir / "heartbeat"))
+
     try:
         await dispatcher.start_polling(bot)
     finally:
+        heartbeat.cancel()
         await llm.close()
         await fatsecret.close()
         await storage.close()
