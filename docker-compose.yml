@@ -1,48 +1,35 @@
+# Всё запускается через compose; локальный venv нужен только если хочется без Docker.
+#
+#   docker compose run --rm test              — тесты
+#   docker compose run --rm spike             — спайк FatSecret (PIN вводится в терминале)
+#   docker compose up bot                     — сам бот
+#
+# Состояние (SQLite, кеш токена спайка) лежит в ./data и переживает пересборку.
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: fsbot:dev
+  env_file: [.env]
+  volumes:
+    - ./data:/data
+
 services:
   bot:
-    build:
-      context: .
-      platforms:
-        - linux/amd64
-        - linux/arm64
-    container_name: fatsecret-bot
+    <<: *common
     restart: unless-stopped
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - FATSECRET_CLIENT_ID=${FATSECRET_CLIENT_ID}
-      - FATSECRET_CLIENT_SECRET=${FATSECRET_CLIENT_SECRET}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - AI_API_KEY=${AI_API_KEY:-}
-      - AI_PROVIDER=${AI_PROVIDER:-openai}
-      - AI_MODEL=${AI_MODEL:-gpt-4o}
-      - DATABASE_URL=${DATABASE_URL:-sqlite:////app/data/bot.db}
-      - FATSECRET_REGION=${FATSECRET_REGION:-US}
-      - FATSECRET_LANGUAGE=${FATSECRET_LANGUAGE:-en}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DEBUG=${DEBUG:-false}
-    volumes:
-      - bot_data:/app/data
 
-  # PostgreSQL service — opt-in for production deployments.
-  # Uncomment below and set DATABASE_URL=postgresql://fatsecret:***@db:5432/fatsecret_bot
-  # db:
-  #   image: postgres:16-alpine
-  #   container_name: fatsecret-db
-  #   restart: unless-stopped
-  #   environment:
-  #     POSTGRES_USER: fatsecret
-  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-  #     POSTGRES_DB: fatsecret_bot
-  #   volumes:
-  #     - pg_data:/var/lib/postgresql/data
-  #   ports:
-  #     - "127.0.0.1:5432:5432"
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U fatsecret -d fatsecret_bot"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
+  test:
+    <<: *common
+    # Тесты не должны видеть ключи: они на чистой логике, сеть им не нужна.
+    env_file: []
+    network_mode: none
+    command: ["python", "-m", "pytest", "-q"]
 
-volumes:
-  bot_data:
-  pg_data:
+  spike:
+    <<: *common
+    # Спайк спрашивает PIN — без stdin и tty он упадёт на input().
+    stdin_open: true
+    tty: true
+    command: ["python", "spike/check_fatsecret.py"]

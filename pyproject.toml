@@ -1,8 +1,24 @@
-[tool.pytest.ini_options]
-testpaths = ["."]
-markers = [
-    "asyncio: mark a test as an async test",
+[project]
+name = "fsbot"
+version = "0.1.0"
+description = "Telegram-бот для добавления еды в личный аккаунт FatSecret"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.27",
+    "httpx>=0.28",
+    "aiosqlite>=0.20",
 ]
 
-[tool.pytest-asyncio]
-asyncio_mode = "auto"
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

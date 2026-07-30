@@ -1,31 +1,38 @@
-# ── Multi-arch Dockerfile (amd64 + arm64) ──────────────────────────
-# Build:  docker build --platform linux/amd64,linux/arm64 -t fatsecret-bot .
+# Мультиплатформенный образ: один и тот же тег идёт и на VPS (amd64),
+# и на Raspberry Pi (arm64) — см. решение 15.
+FROM python:3.14-slim AS builder
 
-FROM python:3.12-slim
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
 
-# Install system dependencies
-# - gcc + libpq-dev: for psycopg2 (PostgreSQL client)
-# - libzbar0:        for pyzbar barcode scanning
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        gcc \
-        libpq-dev \
-        libzbar0 \
-    && rm -rf /var/lib/apt/lists/*
+# Отдельный venv, чтобы в финальный образ не тащить pip и его зависимости.
+RUN python -m venv /opt/venv \
+ && /opt/venv/bin/pip install --upgrade pip \
+ && /opt/venv/bin/pip install '.[dev]'
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+FROM python:3.14-slim AS runtime
 
-# Create data directory for SQLite (if used)
-RUN mkdir -p /app/data
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    FSBOT_STATE_DIR=/data
 
-# Run as non-root for security
-RUN useradd --create-home --shell /bin/bash botuser \
-    && chown -R botuser:botuser /app
-USER botuser
+COPY --from=builder /opt/venv /opt/venv
 
-CMD ["python", "bot.py"]
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY spike ./spike
+COPY tests ./tests
+
+# Состояние (SQLite, кеш токена) — только в /data, который монтируется снаружи.
+RUN useradd --create-home --uid 10001 fsbot \
+ && mkdir -p /data \
+ && chown -R fsbot:fsbot /data /app
+USER fsbot
+
+CMD ["python", "-m", "fsbot"]

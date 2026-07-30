@@ -1,28 +1,18 @@
-# Byte-compiled
+# Секреты и состояние — никогда в репозиторий.
+.env
+*.db
+*.sqlite3
+.spike-token.json
+
 __pycache__/
 *.py[cod]
-*$py.class
-
-# Environment
-.env
-
-# Data
-data/
-
-# Virtual environment
 .venv/
 venv/
-env/
+.pytest_cache/
+.ruff_cache/
 
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
+# состояние контейнеров
+data/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker
-pg_data/
+# артефакты сборки пакета
+*.egg-info/
