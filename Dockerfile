@@ -54,15 +54,20 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     FSBOT_STATE_DIR=/data
 
-# Пользователь и /data создаются до COPY: chown -R после копирования удваивает
-# размер, потому что переписывает все файлы в новый слой.
-RUN adduser -D -H -u 10001 fsbot \
+# su-exec (10 КБ) нужен, чтобы entrypoint выровнял владельца каталога состояния
+# и уронил привилегии до fsbot. Пользователь и /data создаются до COPY: chown -R
+# после копирования удваивает размер, переписывая все файлы в новый слой.
+RUN apk add --no-cache su-exec \
+ && adduser -D -H -u 10001 fsbot \
  && install -d -o fsbot -g fsbot /data
 
 COPY --from=prod-venv /opt/venv /opt/venv
 
 WORKDIR /app
 COPY --chown=fsbot:fsbot src ./src
+COPY docker-entrypoint.sh /usr/local/bin/
 
-USER fsbot
+# USER здесь намеренно не задан: entrypoint стартует от root, выравнивает владельца
+# состояния и переключается на fsbot. Бот работает непривилегированным всегда.
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["python", "-m", "fsbot"]

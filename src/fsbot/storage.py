@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,8 +70,17 @@ class Storage:
         self._db: aiosqlite.Connection | None = None
 
     async def open(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = await aiosqlite.connect(self._path)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._db = await aiosqlite.connect(self._path)
+        except (OSError, sqlite3.OperationalError) as exc:
+            # Иначе наружу выпадает стек из недр aiosqlite вперемешку с «Event loop is
+            # closed» из рабочего потока, и причина — права на каталог — теряется.
+            raise SystemExit(
+                f"Не удалось открыть базу {self._path}: {exc}\n"
+                f"Каталог состояния должен быть доступен на запись пользователю "
+                f"uid={os.getuid()}. Проверь монтирование /data."
+            ) from exc
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
         await self._db.commit()
