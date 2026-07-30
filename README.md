@@ -34,44 +34,46 @@ Telegram-бот, который добавляет продукты в **лич�
 
 ## Запуск
 
-Всё живёт в Docker; локальный Python нужен только если хочется без него.
+`docker-compose.yml` содержит только бота и работает на готовом образе
+`mitetenov/fsbot:latest`, который публикует CI при push в `main` — локально ничего
+не собирается.
 
 ```bash
 cp .env.example .env      # заполнить ключи FatSecret; .env не коммитится
-docker compose build
+docker compose pull
+docker compose up -d bot
+docker compose ps         # healthy / unhealthy по свежести heartbeat
+docker compose logs -f bot
 ```
+
+Состояние — SQLite, heartbeat и кеш access-токена — лежит в `./data`, примонтированном
+в `/data`, и переживает обновление образа.
+
+> ⚠️ Не запускай `docker compose config`: команда разворачивает `env_file` и печатает
+> ключи в терминал. Для проверки синтаксиса есть `docker compose config --quiet`.
+
+### Тесты и спайк
+
+Тесты и спайк лежат внутри того же образа, но в compose их нет — это не сервисы:
 
 ```bash
-docker compose run --rm test     # тесты
-docker compose run --rm spike    # проверки FatSecret, PIN вводится в терминале
-docker compose up bot            # сам бот (пока заглушка)
+docker run --rm --network none mitetenov/fsbot:latest python -m pytest -q
+docker run --rm -it --env-file .env -v "$PWD/data:/data" mitetenov/fsbot:latest \
+  python spike/check_fatsecret.py --two-legged-only
 ```
 
-Состояние — SQLite и кеш access-токена — лежит в `./data`, примонтированном в `/data`,
-и переживает пересборку образа. Сервис `test` запускается без ключей и без сети
-(`network_mode: none`): тесты покрывают чистую логику, наружу им ходить незачем.
+Без `--write` спайк ничего в аккаунте FatSecret не меняет.
 
-Спайк по FatSecret умеет три режима:
+### Сборка образа
 
-```bash
-docker compose run --rm spike python spike/check_fatsecret.py --two-legged-only  # только чтение
-docker compose run --rm spike                                                    # + PIN-авторизация
-docker compose run --rm spike python spike/check_fatsecret.py --write            # + создаёт продукт
-```
-
-Без `--write` скрипт ничего в аккаунте FatSecret не меняет.
-
-### Мультиплатформенный образ
-
-Один тег на VPS (amd64) и Raspberry Pi (arm64) — см. [ADR 0003](docs/adr/0003-tolko-oauth-1-0-dlya-vsego-fatsecret.md)
-и решение о хостинге. Сборка идёт отдельным билдером, чтобы не подменять дефолтный,
-которым пользуется `docker compose`:
+Публикацию делает CI. Вручную (один тег на VPS amd64 и Raspberry Pi arm64 — см.
+[ADR 0003](docs/adr/0003-tolko-oauth-1-0-dlya-vsego-fatsecret.md)):
 
 ```bash
 docker buildx create --name fsbot-multi        # один раз
 docker buildx build --builder fsbot-multi \
   --platform linux/amd64,linux/arm64 \
-  -t <registry>/fsbot:latest --push .
+  -t mitetenov/fsbot:latest --push .
 ```
 
 `--push` (или `--load` для одной платформы) обязателен: с драйвером

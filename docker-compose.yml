@@ -1,47 +1,13 @@
-# Запуск из готового образа: локально ничего не собирается.
-#
-#   docker compose pull                — забрать свежий latest
-#   docker compose up -d bot           — запустить бота
-#   docker compose run --rm test       — тесты внутри того же образа
-#   docker compose run --rm spike      — проверки FatSecret (PIN вводится в терминале)
-#
-# Образ публикует CI при push в main. Чтобы собрать его локально (например, до того как
-# изменения попали в main), добавь override-файл со сборкой:
-#   docker compose -f docker-compose.yml -f docker-compose.build.yml build
-#
-# Состояние (SQLite, heartbeat, кеш токена спайка) лежит в ./data и переживает
-# обновление образа.
-
-x-common: &common
-  image: ${FSBOT_IMAGE:-mitetenov/fsbot:latest}
-  pull_policy: always
-  env_file: [.env]
-  volumes:
-    - ./data:/data
-
 services:
   bot:
-    <<: *common
+    image: mitetenov/fsbot:latest
     restart: unless-stopped
-    # Процесс может остаться живым, а цикл опроса — встать; и наоборот, контейнер
-    # может тихо выйти с кодом 0. Смотрим на свежесть heartbeat, а не на наличие PID.
+    env_file: [.env]
+    volumes:
+      - ./data:/data
     healthcheck:
       test: ["CMD-SHELL", "find /data/heartbeat -mmin -2 | grep -q heartbeat"]
       interval: 60s
       timeout: 5s
       retries: 2
       start_period: 30s
-
-  test:
-    <<: *common
-    # Тесты не должны видеть ключи: они на чистой логике, сеть им не нужна.
-    env_file: []
-    network_mode: none
-    command: ["python", "-m", "pytest", "-q"]
-
-  spike:
-    <<: *common
-    # Спайк спрашивает PIN — без stdin и tty он упадёт на input().
-    stdin_open: true
-    tty: true
-    command: ["python", "spike/check_fatsecret.py"]
