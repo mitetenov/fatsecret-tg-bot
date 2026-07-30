@@ -12,7 +12,12 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, ErrorEvent, Message
+from aiogram.types import (
+    CallbackQuery,
+    ErrorEvent,
+    Message,
+    ReplyKeyboardRemove,
+)
 
 from fsbot.bot import ui
 from fsbot.bot.pipeline import (
@@ -108,7 +113,10 @@ async def _linked(message: Message, storage: Storage):
 async def start(message: Message, storage: Storage, cfg: Config) -> None:
     if not await _gate(message, storage, cfg):
         return
-    await message.answer(HELP)
+    # Reply-клавиатуры живут у клиента, пока их явно не убрать, и переживают смену
+    # реализации бота. Оставшиеся от прежней версии кнопки шлют текст, которого этот
+    # бот не понимает, — выглядит как «кнопка не работает».
+    await message.answer(HELP, reply_markup=ReplyKeyboardRemove())
 
 
 @router.message(Command("help"))

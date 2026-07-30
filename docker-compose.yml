@@ -1,16 +1,20 @@
-# Всё запускается через compose; локальный venv нужен только если хочется без Docker.
+# Запуск из готового образа: локально ничего не собирается.
 #
-#   docker compose run --rm test              — тесты
-#   docker compose run --rm spike             — спайк FatSecret (PIN вводится в терминале)
-#   docker compose up bot                     — сам бот
+#   docker compose pull                — забрать свежий latest
+#   docker compose up -d bot           — запустить бота
+#   docker compose run --rm test       — тесты внутри того же образа
+#   docker compose run --rm spike      — проверки FatSecret (PIN вводится в терминале)
 #
-# Состояние (SQLite, кеш токена спайка) лежит в ./data и переживает пересборку.
+# Образ публикует CI при push в main. Чтобы собрать его локально (например, до того как
+# изменения попали в main), добавь override-файл со сборкой:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml build
+#
+# Состояние (SQLite, heartbeat, кеш токена спайка) лежит в ./data и переживает
+# обновление образа.
 
 x-common: &common
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: fsbot:dev
+  image: ${FSBOT_IMAGE:-mitetenov/fsbot:latest}
+  pull_policy: always
   env_file: [.env]
   volumes:
     - ./data:/data
@@ -19,6 +23,14 @@ services:
   bot:
     <<: *common
     restart: unless-stopped
+    # Процесс может остаться живым, а цикл опроса — встать; и наоборот, контейнер
+    # может тихо выйти с кодом 0. Смотрим на свежесть heartbeat, а не на наличие PID.
+    healthcheck:
+      test: ["CMD-SHELL", "find /data/heartbeat -mmin -2 | grep -q heartbeat"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+      start_period: 30s
 
   test:
     <<: *common
