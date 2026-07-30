@@ -71,6 +71,18 @@ class Edit(StatesGroup):
     waiting_amount = State()
 
 
+def _llm_failure_text(exc: LLMError, what: str) -> str:
+    """Перегрузка провайдера и непонятая еда — разные беды, и советы разные."""
+    if exc.rate_limited:
+        return (
+            "Модель сейчас перегружена на стороне провайдера — попробуй ещё раз через "
+            "минуту. Переписывать ничего не нужно, дело не в тебе."
+        )
+    if what == "фото":
+        return "Не смог разобрать фото. Напиши текстом, что съел."
+    return "Не смог разобрать. Напиши иначе — например «овсянка 60 г»."
+
+
 async def _gate(message: Message, storage: Storage, cfg: Config) -> bool:
     """Пускаем владельца и приглашённых; остальным — их id, чтобы попросить доступ."""
     user_id = message.from_user.id
@@ -278,7 +290,7 @@ async def photo(
         recognition = await llm.recognize_photo(buffer.getvalue(), message.caption)
     except LLMError as exc:
         log.warning("распознавание фото не удалось: %s", exc)
-        await note.edit_text("Не смог разобрать фото. Напиши текстом, что съел.")
+        await note.edit_text(_llm_failure_text(exc, "фото"))
         return
 
     await _present(note, recognition, user, storage, fs, cfg)
@@ -303,7 +315,7 @@ async def text(
         recognition = await llm.recognize_text(message.text or "")
     except LLMError as exc:
         log.warning("разбор текста не удался: %s", exc)
-        await note.edit_text("Не смог разобрать. Напиши иначе — например «овсянка 60 г».")
+        await note.edit_text(_llm_failure_text(exc, "текст"))
         return
 
     await _present(note, recognition, user, storage, fs, cfg)

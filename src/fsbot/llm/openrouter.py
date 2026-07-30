@@ -44,7 +44,20 @@ label — если упаковка, этикетка или таблица пи
 
 
 class LLMError(Exception):
-    pass
+    """Ни одна модель из цепочки не ответила.
+
+    Причины различаются по смыслу: перегрузка провайдера (429) лечится повтором через
+    минуту, всё остальное — нет. Бот обязан говорить об этом по-разному, иначе человек
+    решит, что бот не понял еду, и начнёт переписывать текст вместо повтора.
+    """
+
+    def __init__(self, message: str, statuses: list[int] | None = None) -> None:
+        super().__init__(message)
+        self.statuses = statuses or []
+
+    @property
+    def rate_limited(self) -> bool:
+        return bool(self.statuses) and all(status == 429 for status in self.statuses)
 
 
 class OpenRouter:
@@ -69,6 +82,7 @@ class OpenRouter:
     async def _complete(self, models: list[str], messages: list[dict], schema: bool) -> str:
         """Пробуем модели по списку: бесплатные то заняты, то не умеют json_schema."""
         errors: list[str] = []
+        statuses: list[int] = []
         for model in models:
             body: dict = {"model": model, "messages": messages}
             if schema:
@@ -82,20 +96,23 @@ class OpenRouter:
                 )
             except httpx.HTTPError as exc:
                 errors.append(f"{model}: {exc}")
+                statuses.append(0)
                 continue
 
             if response.status_code != 200:
                 errors.append(f"{model}: HTTP {response.status_code} {response.text[:160]}")
+                statuses.append(response.status_code)
                 continue
 
             payload = response.json()
             choices = payload.get("choices") or []
             if not choices:
                 errors.append(f"{model}: пустой ответ {payload.get('error')}")
+                statuses.append(0)
                 continue
             return choices[0]["message"]["content"] or ""
 
-        raise LLMError("; ".join(errors) or "нет доступных моделей")
+        raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
 
     async def recognize_text(self, text: str) -> Recognition:
         messages = [
