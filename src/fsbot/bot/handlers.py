@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from io import BytesIO
 from zoneinfo import available_timezones
 
@@ -11,7 +12,7 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 from fsbot.bot import ui
 from fsbot.bot.pipeline import (
@@ -238,6 +239,7 @@ async def undo(message: Message, storage: Storage, cfg: Config, fs: FatSecretCli
 async def amount_reply(
     message: Message, state: FSMContext, storage: Storage, fs: FatSecretClient
 ) -> None:
+    log.info("получено количество: %r", message.text)
     raw = (message.text or "").replace(",", ".").strip()
     match = re.search(r"\d+(\.\d+)?", raw)
     if not match:
@@ -322,12 +324,51 @@ async def text(
 
 
 async def _present(note: Message, recognition, user, storage: Storage, fs, cfg) -> None:
+    """Между «модель ответила» и «показал черновик» несколько сетевых шагов.
+
+    Каждый логируется: без этого зависший или молча упавший запрос выглядит для
+    пользователя как «бот написал „Смотрю фото…“ и пропал», а в логах не остаётся
+    ничего, по чему можно понять, где именно он застрял.
+    """
+    log.info(
+        "распознано позиций: %d (%s)",
+        len(recognition.items),
+        ", ".join(item.query_en for item in recognition.items)[:120],
+    )
+
     recent = await fs.recently_eaten(user.token, user.token_secret)
+    log.info("недавно съеденных для ранжирования: %d", len(recent))
+
     draft = await build_draft(fs, recognition, user.tz or cfg.default_tz, recent)
+    found = sum(1 for item in draft["items"] if item.get("food_id"))
+    log.info("кандидаты найдены для %d из %d позиций", found, len(draft["items"]))
+
     draft_id = await storage.save_draft(user.user_id, draft)
     await note.edit_text(
         ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
     )
+    log.info("черновик %d показан", draft_id)
+
+
+@router.errors()
+async def on_error(event: ErrorEvent) -> bool:
+    """Молчание — худший из возможных ответов: человек не знает, ждать ему или нет.
+
+    Любое необработанное исключение попадает сюда, пишется в лог со стеком и
+    превращается в честное сообщение пользователю.
+    """
+    log.exception("необработанная ошибка: %s", event.exception)
+
+    message = getattr(event.update, "message", None) or getattr(
+        getattr(event.update, "callback_query", None), "message", None
+    )
+    if message:
+        with suppress(Exception):
+            await message.answer(
+                "Что-то сломалось на моей стороне — я записал это в лог. "
+                "Попробуй ещё раз; если повторится, скажи владельцу бота."
+            )
+    return True
 
 
 @router.callback_query()
@@ -335,6 +376,8 @@ async def callbacks(
     call: CallbackQuery, state: FSMContext, storage: Storage, fs: FatSecretClient
 ) -> None:
     draft_id, action, arg = ui.parse_cb(call.data or "")
+    log.info("кнопка %r arg=%r черновик=%s", action, arg, draft_id)
+
     draft = await storage.get_draft(draft_id)
     if draft is None:
         await call.answer("Черновик уже неактуален", show_alert=True)
@@ -387,6 +430,7 @@ async def callbacks(
     elif action == ui.ASK_GRAMS:
         await state.set_state(Edit.waiting_amount)
         await state.update_data(draft_id=draft_id, index=int(arg))
+        log.info("жду количество для позиции %s черновика %s", arg, draft_id)
         await call.message.answer("Пришли количество числом — граммы или штуки.")
     elif action == ui.PICK_MEAL:
         if not arg:

@@ -161,4 +161,10 @@ class OpenRouter:
 
         retry = [*messages, {"role": "user", "content": "Верни только валидный JSON."}]
         raw = await self._complete(models, retry, schema=False)
-        return parse_recognition(raw)
+        # Разбор повтора тоже может не удаться — например, если человек прислал голое
+        # число или модель ничего не распознала. Это нормальный исход, а не авария:
+        # наружу уходит LLMError, который хендлеры умеют превращать в понятный ответ.
+        try:
+            return parse_recognition(raw)
+        except ParseError as second:
+            raise LLMError(f"разбор не удался дважды: {second}") from second

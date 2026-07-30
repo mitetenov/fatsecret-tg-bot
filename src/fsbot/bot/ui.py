@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from html import escape
+
 from fsbot.domain.daybounds import MEAL_RU, Meal
 
 WRITE = "w"
@@ -30,15 +32,18 @@ def parse_cb(data: str) -> tuple[int, str, str]:
 
 
 def render_draft(draft: dict) -> str:
+    # Названия продуктов приходят из чужой базы: «Ben & Jerry's», «<brand>» и прочее
+    # ломают разметку HTML, а Telegram на такое отвечает ошибкой, а не показом текста.
     lines: list[str] = []
     total = 0.0
     for index, item in enumerate(draft["items"], start=1):
         if not item.get("food_id"):
-            lines.append(f"{index}. <b>{item['name_ru']}</b> — не нашёл в базе FatSecret")
+            name = escape(str(item["name_ru"]))
+            lines.append(f"{index}. <b>{name}</b> — не нашёл в базе FatSecret")
             continue
         total += item["kcal"]
         lines.append(
-            f"{index}. <b>{item['title']}</b> — {item['portion']}\n"
+            f"{index}. <b>{escape(str(item['title']))}</b> — {escape(str(item['portion']))}\n"
             f"    {item['kcal']:g} ккал · Б {item['protein']:g} · "
             f"Ж {item['fat']:g} · У {item['carbohydrate']:g}"
         )
