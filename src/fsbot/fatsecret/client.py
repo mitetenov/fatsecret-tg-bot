@@ -144,6 +144,52 @@ class FatSecretClient:
         payload = await self._call("food.get", food_id=food_id)
         return payload["food"]
 
+    async def autocomplete(self, expression: str) -> list[str]:
+        """Подсказки поиска. Спасают, когда LLM дала неточный английский запрос."""
+        try:
+            payload = await self._call("foods.autocomplete", expression=expression)
+        except FatSecretError:
+            return []
+        raw = (payload.get("suggestions") or {}).get("suggestion") or []
+        return [raw] if isinstance(raw, str) else list(raw)
+
+    async def food_id_by_barcode(self, barcode: str) -> str | None:
+        """GTIN → food_id. Пустой ответ означает «в базе нет», а не ошибку."""
+        payload = await self._call("food.find_id_for_barcode", barcode=barcode)
+        food_id = (payload.get("food_id") or {}).get("value")
+        return str(food_id) if food_id and str(food_id) != "0" else None
+
+    async def create_food(
+        self,
+        token: str,
+        token_secret: str,
+        *,
+        name: str,
+        brand: str,
+        kcal: float,
+        protein: float,
+        fat: float,
+        carbs: float,
+        serving_size: str = "100 g",
+    ) -> str:
+        """Создать Свой продукт. Необратимо: парного метода удаления в API нет."""
+        payload = await self._call(
+            "food.create.v2",
+            token=token,
+            token_secret=token_secret,
+            food_name=name[:60],
+            brand_type="manufacturer",
+            brand_name=brand[:60],
+            serving_size=serving_size,
+            metric_serving_amount=100,
+            metric_serving_unit="g",
+            calories=kcal,
+            protein=protein,
+            fat=fat,
+            carbohydrate=carbs,
+        )
+        return str((payload.get("food_id") or {}).get("value", ""))
+
     # --- дневник ----------------------------------------------------------
 
     async def create_entry(

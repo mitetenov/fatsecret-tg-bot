@@ -1,6 +1,9 @@
 services:
   bot:
     image: mitetenov/fsbot:latest
+    # Тег latest не меняется, поэтому без этого `docker compose up -d` поднимает
+    # закешированный образ и в реестр не ходит — сервер молча остаётся на старом коде.
+    pull_policy: always
     restart: unless-stopped
     env_file: [.env]
     # Именованный том, а не ./data: bind-mount на чистом сервере создаётся от root,

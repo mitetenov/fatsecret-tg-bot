@@ -23,6 +23,7 @@ RECOGNITION_SCHEMA = {
         "type": "object",
         "properties": {
             "kind": {"type": "string", "enum": ["text", "plate", "label"]},
+            "barcode": {"type": "string"},
             "items": {
                 "type": "array",
                 "items": {
@@ -34,6 +35,11 @@ RECOGNITION_SCHEMA = {
                         "unit": {"type": "string", "enum": sorted(UNITS)},
                         "meal": {"type": "string"},
                         "date_hint": {"type": "string"},
+                        "brand": {"type": "string"},
+                        "kcal_100g": {"type": "number"},
+                        "protein_100g": {"type": "number"},
+                        "fat_100g": {"type": "number"},
+                        "carbs_100g": {"type": "number"},
                     },
                     "required": ["query_en", "name_ru", "amount", "unit"],
                     "additionalProperties": False,
@@ -47,6 +53,16 @@ RECOGNITION_SCHEMA = {
 
 
 @dataclass(frozen=True, slots=True)
+class Nutrition:
+    """КБЖУ на 100 г с этикетки — из них можно создать Свой продукт."""
+
+    kcal: float
+    protein: float
+    fat: float
+    carbs: float
+
+
+@dataclass(frozen=True, slots=True)
 class RecognizedItem:
     query_en: str
     name_ru: str
@@ -54,12 +70,15 @@ class RecognizedItem:
     unit: str
     meal: str | None = None
     date_hint: str | None = None
+    brand: str | None = None
+    nutrition: Nutrition | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Recognition:
     kind: str
     items: list[RecognizedItem] = field(default_factory=list)
+    barcode: str | None = None
 
 
 class ParseError(Exception):
@@ -102,7 +121,13 @@ def parse_recognition(raw: str) -> Recognition:
 
     if not items:
         raise ParseError("модель не назвала ни одного продукта")
-    return Recognition(kind=kind, items=items)
+    return Recognition(kind=kind, items=items, barcode=_parse_barcode(payload.get("barcode")))
+
+
+def _parse_barcode(value: object) -> str | None:
+    """Штрих-код с фото: только цифры и правдоподобная длина GTIN."""
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits if 8 <= len(digits) <= 14 else None
 
 
 def _parse_item(entry: dict) -> RecognizedItem | None:
@@ -142,4 +167,25 @@ def _parse_item(entry: dict) -> RecognizedItem | None:
         unit=unit,
         meal=meal,
         date_hint=hint,
+        brand=(str(entry.get("brand")).strip() or None) if entry.get("brand") else None,
+        nutrition=_parse_nutrition(entry),
     )
+
+
+def _parse_nutrition(entry: dict) -> Nutrition | None:
+    """Создавать продукт можно только по полному набору: частичные КБЖУ хуже, чем их
+    отсутствие — они выглядят достоверно, а дневник считают неверно."""
+    values = {}
+    for field_name, key in (
+        ("kcal", "kcal_100g"),
+        ("protein", "protein_100g"),
+        ("fat", "fat_100g"),
+        ("carbs", "carbs_100g"),
+    ):
+        try:
+            values[field_name] = float(entry[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+    if values["kcal"] <= 0:
+        return None
+    return Nutrition(**values)

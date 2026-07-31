@@ -23,12 +23,15 @@ from fsbot.bot import ui
 from fsbot.bot.pipeline import (
     apply_candidate,
     build_draft,
+    create_own_food,
+    draft_from_food,
     render_report,
     set_amount,
     shift_day,
     write_draft,
 )
 from fsbot.config import Config
+from fsbot.domain import barcodes
 from fsbot.fatsecret.client import FatSecretClient, FatSecretError
 from fsbot.llm.openrouter import LLMError, OpenRouter
 from fsbot.storage import Storage
@@ -53,8 +56,9 @@ HELP = """Пишу еду в твой дневник FatSecret.
 /undo — отменить последнюю запись
 /attribution — об источнике данных
 
-<b>Сейчас недоступно</b>
-Штрих-коды и создание своих продуктов: тариф FatSecret отдаёт только базовый доступ."""
+• Штрих-кодом: пришли цифры под кодом или фото самого кода
+
+Если продукта нет в базе — пришли фото этикетки, создам его в твоём аккаунте."""
 
 ATTRIBUTION = """Данные о продуктах и дневник — <b>fatsecret</b>.
 Powered by fatsecret · https://platform.fatsecret.com
@@ -62,10 +66,10 @@ Powered by fatsecret · https://platform.fatsecret.com
 Точную формулировку атрибуции нужно сверить с Terms and Conditions FatSecret —
 пока здесь заглушка."""
 
-TIER_LIMITED = """Штрих-коды на текущем тарифе FatSecret недоступны — аккаунту выдаётся
-только базовый доступ, а метод сканирования требует Premier.
+BARCODE_UNKNOWN = """Такого штрих-кода нет в базе FatSecret.
 
-Пришли фото упаковки или напиши название текстом."""
+Пришли фото упаковки с таблицей пищевой ценности — прочитаю КБЖУ, создам продукт
+в твоём аккаунте и запомню этот код: в следующий раз хватит одного сканирования."""
 
 
 class Link(StatesGroup):
@@ -75,6 +79,12 @@ class Link(StatesGroup):
 
 class Edit(StatesGroup):
     waiting_amount = State()
+
+
+class Barcode(StatesGroup):
+    """Код не нашёлся — ждём фото этикетки, чтобы создать продукт и связать с кодом."""
+
+    waiting_label = State()
 
 
 def _llm_failure_text(exc: LLMError, what: str) -> str:
@@ -266,21 +276,80 @@ async def amount_reply(
     await storage.update_draft(draft_id, draft)
     await state.clear()
     await message.answer(
-        ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
+        ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
     )
 
 
 @router.message(F.text.regexp(BARCODE))
-async def barcode(message: Message, storage: Storage, cfg: Config) -> None:
+async def barcode(
+    message: Message,
+    state: FSMContext,
+    storage: Storage,
+    cfg: Config,
+    fs: FatSecretClient,
+) -> None:
     if not await _gate(message, storage, cfg):
         return
-    await message.answer(TIER_LIMITED)
+    user = await _linked(message, storage)
+    if not user:
+        return
+    await _by_barcode(message, (message.text or "").strip(), state, storage, cfg, fs, user)
+
+
+async def _by_barcode(
+    message: Message,
+    code: str,
+    state: FSMContext,
+    storage: Storage,
+    cfg: Config,
+    fs: FatSecretClient,
+    user,
+) -> None:
+    note = await message.answer("Ищу по штрих-коду…")
+
+    # Сначала своя Связка: она появляется, когда продукта не было в базе и мы его
+    # создали, — второй раз тот же товар не должен требовать ни фото, ни ввода.
+    food_id = await storage.bound_food(user.user_id, code)
+    if food_id:
+        log.info("штрих-код %s → свой продукт %s", code, food_id)
+    else:
+        try:
+            food_id = await fs.food_id_by_barcode(code)
+        except FatSecretError as exc:
+            await note.edit_text(f"FatSecret не ответил: {exc.message}")
+            return
+
+    if not food_id:
+        await state.set_state(Barcode.waiting_label)
+        await state.update_data(barcode=code)
+        await note.edit_text(BARCODE_UNKNOWN)
+        return
+
+    draft = await draft_from_food(fs, food_id, user.tz or cfg.default_tz)
+    draft_id = await storage.save_draft(user.user_id, draft)
+    await note.edit_text(ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft))
+
+
+@router.message(Barcode.waiting_label, F.photo)
+async def label_photo(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    storage: Storage,
+    cfg: Config,
+    fs: FatSecretClient,
+    llm: OpenRouter,
+) -> None:
+    data = await state.get_data()
+    await state.clear()
+    await _photo_flow(message, bot, state, storage, cfg, fs, llm, barcode=data.get("barcode"))
 
 
 @router.message(F.photo)
 async def photo(
     message: Message,
     bot: Bot,
+    state: FSMContext,
     storage: Storage,
     cfg: Config,
     fs: FatSecretClient,
@@ -288,6 +357,19 @@ async def photo(
 ) -> None:
     if not await _gate(message, storage, cfg):
         return
+    await _photo_flow(message, bot, state, storage, cfg, fs, llm)
+
+
+async def _photo_flow(
+    message: Message,
+    bot: Bot,
+    state: FSMContext,
+    storage: Storage,
+    cfg: Config,
+    fs: FatSecretClient,
+    llm: OpenRouter,
+    barcode: str | None = None,
+) -> None:
     user = await _linked(message, storage)
     if not user:
         return
@@ -296,6 +378,15 @@ async def photo(
     buffer = BytesIO()
     await bot.download(message.photo[-1], destination=buffer)
 
+    # Сначала декодер: если на фото есть штрих-код, продукт определяется точно, и
+    # звать LLM незачем — это лишние секунды, лишний запрос из лимита и лишний риск
+    # ошибиться в цифрах.
+    scanned = barcodes.decode(buffer.getvalue())
+    if scanned:
+        await note.delete()
+        await _by_barcode(message, scanned, state, storage, cfg, fs, user)
+        return
+
     try:
         recognition = await llm.recognize_photo(buffer.getvalue(), message.caption)
     except LLMError as exc:
@@ -303,7 +394,7 @@ async def photo(
         await note.edit_text(_llm_failure_text(exc, "фото"))
         return
 
-    await _present(note, recognition, user, storage, fs, cfg)
+    await _present(note, recognition, user, storage, fs, cfg, barcode=barcode)
 
 
 @router.message(F.text)
@@ -331,7 +422,9 @@ async def text(
     await _present(note, recognition, user, storage, fs, cfg)
 
 
-async def _present(note: Message, recognition, user, storage: Storage, fs, cfg) -> None:
+async def _present(
+    note: Message, recognition, user, storage: Storage, fs, cfg, barcode: str | None = None
+) -> None:
     """Между «модель ответила» и «показал черновик» несколько сетевых шагов.
 
     Каждый логируется: без этого зависший или молча упавший запрос выглядит для
@@ -347,13 +440,13 @@ async def _present(note: Message, recognition, user, storage: Storage, fs, cfg) 
     recent = await fs.recently_eaten(user.token, user.token_secret)
     log.info("недавно съеденных для ранжирования: %d", len(recent))
 
-    draft = await build_draft(fs, recognition, user.tz or cfg.default_tz, recent)
+    draft = await build_draft(fs, recognition, user.tz or cfg.default_tz, recent, barcode)
     found = sum(1 for item in draft["items"] if item.get("food_id"))
     log.info("кандидаты найдены для %d из %d позиций", found, len(draft["items"]))
 
     draft_id = await storage.save_draft(user.user_id, draft)
     await note.edit_text(
-        ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
+        ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
     )
     log.info("черновик %d показан", draft_id)
 
@@ -413,7 +506,7 @@ async def callbacks(
             await call.message.edit_text(render_report(report))
         else:
             await call.message.edit_text(
-                render_report(report), reply_markup=ui.draft_keyboard(draft_id)
+                render_report(report), reply_markup=ui.draft_keyboard(draft_id, draft)
             )
         await call.answer()
         return
@@ -433,8 +526,35 @@ async def callbacks(
         await apply_candidate(fs, draft["items"][index], position)
         await storage.update_draft(draft_id, draft)
         await call.message.edit_text(
-            ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
+            ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
         )
+    elif action == ui.CREATE_FOOD:
+        user = await storage.get_user(call.from_user.id)
+        if not user or not user.is_linked:
+            await call.answer("Сначала /link", show_alert=True)
+            return
+        index = int(arg)
+        await call.answer("Создаю продукт…")
+        try:
+            food_id = await create_own_food(
+                fs, draft["items"][index], user.token, user.token_secret
+            )
+        except FatSecretError as exc:
+            await call.message.answer(f"Не удалось создать продукт: {exc.message}")
+            return
+
+        # Связка живёт у нас, а не в FatSecret: следующее сканирование этого кода
+        # найдёт продукт сразу, без фото и без создания дубля.
+        if food_id and draft.get("barcode"):
+            await storage.bind_barcode(user.user_id, draft["barcode"], food_id)
+            log.info("связал штрих-код %s с продуктом %s", draft["barcode"], food_id)
+
+        await storage.update_draft(draft_id, draft)
+        await call.message.edit_text(
+            ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
+        )
+        return
+
     elif action == ui.ASK_GRAMS:
         await state.set_state(Edit.waiting_amount)
         await state.update_data(draft_id=draft_id, index=int(arg))
@@ -447,7 +567,7 @@ async def callbacks(
             draft["meal"] = arg
             await storage.update_draft(draft_id, draft)
             await call.message.edit_text(
-                ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
+                ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
             )
     elif action == ui.PICK_DATE:
         if not arg:
@@ -456,11 +576,11 @@ async def callbacks(
             shift_day(draft, arg)
             await storage.update_draft(draft_id, draft)
             await call.message.edit_text(
-                ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
+                ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
             )
     elif action == ui.BACK:
         await call.message.edit_text(
-            ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id)
+            ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
         )
 
     await call.answer()

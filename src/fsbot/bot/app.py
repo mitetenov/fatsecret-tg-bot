@@ -39,15 +39,38 @@ OWNER_COMMANDS = [*PUBLIC_COMMANDS, BotCommand(command="allow", description="о�
 HEARTBEAT_PERIOD = 30
 
 
-async def _heartbeat(path) -> None:
-    """Отметка «цикл опроса жив».
+class PollingConflict(logging.Filter):
+    """Ловит «Conflict: terminated by other getUpdates» из логов aiogram.
 
-    Бот однажды молча лёг с кодом 0, и заметил это человек, а не система: снаружи
-    работающий и упавший процесс выглядят одинаково. Свежесть этого файла проверяет
-    healthcheck контейнера.
+    Два процесса на одном токене — не сбой связи, а поломка развёртывания: Telegram
+    раздаёт апдейты то одному, то другому, диалог рвётся на середине, и выглядит это
+    как хаотичные ответы невпопад, а не как ошибка. Сам процесс при этом жив и здоров,
+    поэтому healthcheck обязан узнать об этом от логов.
+    """
+
+    detected = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if "conflict" in record.getMessage().lower():
+            PollingConflict.detected = True
+        return True
+
+
+async def _heartbeat(path) -> None:
+    """Отметка «бот действительно обслуживает свой токен».
+
+    Бот однажды молча лёг с кодом 0, и заметил это человек, а не система. При конфликте
+    отметку перестаём обновлять: живой процесс, который ничего не получает, для
+    пользователя неотличим от мёртвого, и healthcheck должен показывать то же самое.
     """
     while True:
-        path.touch()
+        if PollingConflict.detected:
+            log.error(
+                "второй экземпляр бота на том же токене — апдейты уходят к нему; "
+                "heartbeat остановлен, контейнер станет unhealthy"
+            )
+        else:
+            path.touch()
         await asyncio.sleep(HEARTBEAT_PERIOD)
 
 
@@ -55,6 +78,7 @@ async def run() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
+    logging.getLogger("aiogram.dispatcher").addFilter(PollingConflict())
     config = Config.from_env()
 
     storage = Storage(config.db_path)
