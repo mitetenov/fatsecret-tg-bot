@@ -42,8 +42,13 @@ def render_draft(draft: dict) -> str:
             name = escape(str(item["name_ru"]))
             if item.get("creatable"):
                 spec = item["creatable"]
+                origin = (
+                    f"источник: {escape(str(item['source']))}"
+                    if item.get("source")
+                    else "с этикетки"
+                )
                 lines.append(
-                    f"{index}. <b>{name}</b> — в базе нет, но с этикетки считано:\n"
+                    f"{index}. <b>{name}</b> — в базе FatSecret нет, {origin}:\n"
                     f"    {spec['kcal']:g} ккал · Б {spec['protein']:g} · "
                     f"Ж {spec['fat']:g} · У {spec['carbs']:g} на 100 г"
                 )

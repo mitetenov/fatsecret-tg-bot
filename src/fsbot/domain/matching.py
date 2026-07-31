@@ -18,6 +18,14 @@ from fsbot.domain.servings import Serving
 # почти всегда другой продукт.
 TOLERANCE = 0.25
 
+# Для отдельного макронутриента порог шире: белки и жиры у одного и того же продукта
+# гуляют сильнее калорийности, а округления на упаковке бьют по ним заметнее.
+MACRO_TOLERANCE = 0.40
+
+# Ниже этого значения (г на 100 г) сравнивать бессмысленно: 0.2 против 0.4 — это
+# «следы», а не разница продуктов.
+MACRO_FLOOR = 1.0
+
 
 def kcal_per_100g(servings: list[Serving]) -> float | None:
     """Калорийность продукта на 100 г, если её вообще можно вычислить."""
@@ -34,14 +42,54 @@ def deviation(label_kcal: float, candidate_kcal: float) -> float:
     return abs(candidate_kcal - label_kcal) / label_kcal
 
 
-def matches_label(label_kcal: float, servings: list[Serving]) -> tuple[bool, float | None]:
+def per_100g(servings: list[Serving]) -> dict[str, float] | None:
+    """Полный профиль продукта на 100 г, если его вообще можно вычислить."""
+    for serving in servings:
+        if serving.is_metric and serving.metric_amount and serving.calories:
+            scale = 100 / serving.metric_amount
+            return {
+                "kcal": serving.calories * scale,
+                "protein": serving.protein * scale,
+                "fat": serving.fat * scale,
+                "carbs": serving.carbohydrate * scale,
+            }
+    return None
+
+
+def matches_label(
+    label: dict[str, float] | float, servings: list[Serving]
+) -> tuple[bool, float | None]:
     """Похож ли Кандидат на то, что написано на этикетке.
+
+    Сравниваются калории и все три макронутриента. Одних калорий мало: копчёный тунец
+    (201 ккал, Б 25.7, У 0) и салат из тунца с фасолью (186 ккал, Б 12, У 6.7)
+    расходятся по калорийности на 8% и проходили проверку, будучи разными продуктами.
 
     Возвращает (похож, расхождение). Расхождение None означает «сравнить не удалось» —
     у продукта нет метрической порции, и это не повод его отвергать.
     """
-    candidate = kcal_per_100g(servings)
+    if isinstance(label, (int, float)):
+        label = {"kcal": float(label)}
+
+    candidate = per_100g(servings)
     if candidate is None:
         return True, None
-    gap = deviation(label_kcal, candidate)
-    return gap <= TOLERANCE, gap
+
+    kcal_gap = deviation(label["kcal"], candidate["kcal"])
+    if kcal_gap > TOLERANCE:
+        return False, kcal_gap
+
+    worst = kcal_gap
+    for macro in ("protein", "fat", "carbs"):
+        expected = label.get(macro)
+        if expected is None:
+            continue
+        # Оба значения ниже порога — сравнивать нечего.
+        if expected < MACRO_FLOOR and candidate[macro] < MACRO_FLOOR:
+            continue
+        gap = deviation(max(expected, MACRO_FLOOR), candidate[macro])
+        worst = max(worst, gap)
+        if gap > MACRO_TOLERANCE:
+            return False, gap
+
+    return True, worst

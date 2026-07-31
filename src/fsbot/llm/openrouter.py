@@ -7,7 +7,13 @@ import logging
 
 import httpx
 
-from fsbot.llm.parsing import RECOGNITION_SCHEMA, ParseError, Recognition, parse_recognition
+from fsbot.llm.parsing import (
+    RECOGNITION_SCHEMA,
+    ParseError,
+    Recognition,
+    extract_json,
+    parse_recognition,
+)
 
 log = logging.getLogger(__name__)
 
@@ -69,6 +75,20 @@ class LLMError(Exception):
         return bool(self.statuses) and all(status == 429 for status in self.statuses)
 
 
+BARCODE_PROMPT = """Найди товар со штрих-кодом {barcode}.
+Название дай по-русски или по-английски — оно попадёт в дневник питания навсегда;
+не оставляй его на языке сайта-источника.
+Верни только JSON: {{"found": true/false, "name": "название", "brand": "бренд",
+"kcal_100g": число, "protein_100g": число, "fat_100g": число, "carbs_100g": число,
+"source": "домен, откуда взяты данные"}}
+Если данных нет — {{"found": false}}. Не выдумывай числа: без источника ставь false."""
+
+
+# Столько попыток веб-поиска: при вероятности успеха около половины три попытки дают
+# примерно 90%, а стоят вместе меньше одной десятой цента.
+BARCODE_LOOKUP_ATTEMPTS = 3
+
+
 class OpenRouter:
     def __init__(
         self,
@@ -122,6 +142,37 @@ class OpenRouter:
             return choices[0]["message"]["content"] or ""
 
         raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
+
+    async def lookup_barcode(self, barcode: str) -> dict | None:
+        """Что известно о товаре в вебе. Только с grounding — без него модель выдумывает.
+
+        Проверено на 5201340026780: с поиском — TRATA, салат из тунца, 186 ккал (что
+        совпало с этикеткой), без поиска — «сыр фета Dodoni, 264 ккал» и выдуманный
+        источник. Поэтому суффикс :online обязателен, а не желателен.
+        """
+        online = [f"{m}:online" for m in self._text_models if not m.endswith(":online")]
+        if not online:
+            return None
+
+        # Веб-поиск недетерминирован: на один и тот же код модель отвечает то товаром,
+        # то «не нашёл» — замерено, примерно поровну. Поэтому «не нашёл» с первой
+        # попытки ничего не значит, и мы пробуем ещё; запрос стоит доли цента.
+        data: dict = {}
+        message = [{"role": "user", "content": BARCODE_PROMPT.format(barcode=barcode)}]
+        for attempt in range(BARCODE_LOOKUP_ATTEMPTS):
+            try:
+                data = extract_json(await self._complete(online, message, schema=False))
+            except (LLMError, ParseError) as exc:
+                log.info("поиск товара по коду %s не удался: %s", barcode, exc)
+                return None
+            if data.get("found"):
+                break
+            log.info("попытка %d: товар по коду %s не найден", attempt + 1, barcode)
+
+        if not data.get("found"):
+            return None
+        log.info("код %s опознан в вебе: %s (%s)", barcode, data.get("name"), data.get("source"))
+        return data
 
     async def recognize_text(self, text: str) -> Recognition:
         messages = [

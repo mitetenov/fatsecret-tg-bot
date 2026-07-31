@@ -19,6 +19,7 @@ from fsbot.bot.handlers import router
 from fsbot.config import Config
 from fsbot.domain import barcodes
 from fsbot.fatsecret.client import FatSecretClient
+from fsbot.foodfacts import OpenFoodFacts
 from fsbot.llm.openrouter import OpenRouter
 from fsbot.storage import Storage
 
@@ -87,6 +88,7 @@ async def run() -> None:
 
     fatsecret = FatSecretClient(config.consumer_key, config.consumer_secret)
     llm = OpenRouter(config.openrouter_key, config.text_models, config.vision_models)
+    foodfacts = OpenFoodFacts()
 
     bot = Bot(
         token=config.telegram_token,
@@ -94,7 +96,9 @@ async def run() -> None:
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(router)
-    dispatcher.workflow_data.update(storage=storage, fs=fatsecret, llm=llm, cfg=config)
+    dispatcher.workflow_data.update(
+        storage=storage, fs=fatsecret, llm=llm, off=foodfacts, cfg=config
+    )
 
     await bot.set_my_commands(PUBLIC_COMMANDS, scope=BotCommandScopeDefault())
     await bot.set_my_commands(
@@ -117,6 +121,7 @@ async def run() -> None:
         await dispatcher.start_polling(bot)
     finally:
         heartbeat.cancel()
+        await foodfacts.close()
         await llm.close()
         await fatsecret.close()
         await storage.close()

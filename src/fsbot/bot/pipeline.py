@@ -80,6 +80,44 @@ async def draft_from_food(
     }
 
 
+def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
+    """Товар опознан по штрих-коду в вебе, но его нет в базе FatSecret.
+
+    Искать его там же по названию бессмысленно — если бы он там был, нашёлся бы по
+    коду. Поэтому сразу предлагаем создать Свой продукт из найденных данных.
+    """
+    day, meal = resolve(tz)
+    name = product.get("name") or "Продукт"
+    item = {
+        "name_ru": name,
+        "query": name,
+        "amount": 100,
+        "unit": "g",
+        "status": "pending",
+        "entry_id": None,
+        "error": None,
+        "candidates": [],
+        "chosen": 0,
+        "food_id": None,
+        "creatable": {
+            "name": name,
+            "brand": product.get("brand") or "fsbot",
+            "kcal": product.get("kcal_100g"),
+            "protein": product.get("protein_100g"),
+            "fat": product.get("fat_100g"),
+            "carbs": product.get("carbs_100g"),
+        },
+        "source": product.get("source"),
+    }
+    return {
+        "day": day.isoformat(),
+        "meal": meal.value,
+        "items": [item],
+        "kind": "web",
+        "barcode": barcode,
+    }
+
+
 async def _resolve_item(
     fs: FatSecretClient, item: RecognizedItem, recent: list[FoodSummary]
 ) -> dict:
@@ -133,6 +171,12 @@ async def _resolve_item(
         # укладывается, а не первого попавшегося: на салат из тунца поиск однажды
         # вернул шоколад, и бот принял это молча.
         base["label_kcal"] = item.nutrition.kcal
+        base["label_macros"] = {
+            "kcal": item.nutrition.kcal,
+            "protein": item.nutrition.protein,
+            "fat": item.nutrition.fat,
+            "carbs": item.nutrition.carbs,
+        }
         base["creatable"] = {
             "name": item.name_ru,
             "brand": item.brand or "fsbot",
@@ -174,7 +218,9 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
 
     mismatch = None
     if item.get("label_kcal"):
-        ok, gap = matching.matches_label(item["label_kcal"], portions)
+        ok, gap = matching.matches_label(
+            item.get("label_macros") or item["label_kcal"], portions
+        )
         if not ok:
             mismatch = gap
 
