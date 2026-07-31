@@ -32,7 +32,7 @@ from fsbot.bot.pipeline import (
     write_draft,
 )
 from fsbot.config import Config
-from fsbot.domain import barcodes
+from fsbot.domain import barcodes, naming
 from fsbot.fatsecret.client import FatSecretClient, FatSecretError
 from fsbot.foodfacts import OpenFoodFacts
 from fsbot.llm.openrouter import LLMError, OpenRouter
@@ -308,7 +308,21 @@ async def _lookup_product(code: str, off: OpenFoodFacts, llm: OpenRouter) -> dic
     Open Food Facts отвечает одинаково на каждый запрос и бесплатно; веб-поиск моделью
     на том же коде срабатывал в двух прогонах из пяти, поэтому он резерв, а не основа.
     """
-    return await off.lookup(code) or await llm.lookup_barcode(code)
+    product = await off.lookup(code) or await llm.lookup_barcode(code)
+    if not product:
+        return None
+
+    if not naming.is_readable(product["name"]):
+        log.info("название %r нечитаемо — перевожу", product["name"])
+        translated = await llm.translate_product(product["name"], product.get("brand", ""))
+        if translated:
+            product["name"], product["brand"] = translated
+        else:
+            # Перевести не вышло: числа верные, но подписывать ими нечитаемую строку
+            # нельзя — пусть человек назовёт продукт сам, прислав фото этикетки.
+            log.info("перевод не удался, отдаю продукт без названия")
+            return None
+    return product
 
 
 async def _food_by_barcode(code: str, storage: Storage, fs: FatSecretClient, user) -> str | None:

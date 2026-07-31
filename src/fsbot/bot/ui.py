@@ -32,6 +32,17 @@ def parse_cb(data: str) -> tuple[int, str, str]:
     return int(draft_id), action, arg
 
 
+def scale_creatable(item: dict) -> dict[str, float]:
+    """КБЖУ будущего Своего продукта под указанное количество.
+
+    В спецификации всё хранится на 100 г — это формат, который ждёт FatSecret при
+    создании. Человеку же нужно видеть то, что попадёт в Дневник.
+    """
+    spec = item["creatable"]
+    scale = float(item.get("amount") or 100) / 100
+    return {key: round(float(spec[key] or 0) * scale, 1) for key in ("kcal", "protein", "fat", "carbs")}
+
+
 def render_draft(draft: dict) -> str:
     # Названия продуктов приходят из чужой базы: «Ben & Jerry's», «<brand>» и прочее
     # ломают разметку HTML, а Telegram на такое отвечает ошибкой, а не показом текста.
@@ -40,17 +51,23 @@ def render_draft(draft: dict) -> str:
     for index, item in enumerate(draft["items"], start=1):
         if not item.get("food_id"):
             name = escape(str(item["name_ru"]))
-            if item.get("creatable"):
-                spec = item["creatable"]
+            spec = item.get("creatable")
+            if spec:
+                # Показываем не «на 100 г», а то, что реально уйдёт в Дневник, — и
+                # добавляем в сумму: иначе в строке 186 ккал, а в итоге ноль.
+                scaled = scale_creatable(item)
+                total += scaled["kcal"]
                 origin = (
                     f"источник: {escape(str(item['source']))}"
                     if item.get("source")
                     else "с этикетки"
                 )
                 lines.append(
-                    f"{index}. <b>{name}</b> — в базе FatSecret нет, {origin}:\n"
-                    f"    {spec['kcal']:g} ккал · Б {spec['protein']:g} · "
-                    f"Ж {spec['fat']:g} · У {spec['carbs']:g} на 100 г"
+                    f"{index}. <b>{name}</b> — {item['amount']:g} {item['unit']}"
+                    f" · в базе FatSecret нет, {origin}\n"
+                    f"    {scaled['kcal']:g} ккал · Б {scaled['protein']:g} · "
+                    f"Ж {scaled['fat']:g} · У {scaled['carbs']:g}\n"
+                    f"    ➕ создай продукт кнопкой ниже, иначе пункт не запишется"
                 )
             else:
                 lines.append(f"{index}. <b>{name}</b> — не нашёл в базе FatSecret")
