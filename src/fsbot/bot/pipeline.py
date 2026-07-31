@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from fsbot.domain import servings as srv
+from fsbot.domain import matching, servings as srv
 from fsbot.domain.daybounds import Meal, resolve
 from fsbot.fatsecret.client import FatSecretClient, FatSecretError, FoodSummary
 from fsbot.llm.parsing import Recognition, RecognizedItem
@@ -128,7 +128,20 @@ async def _resolve_item(
     base["candidates"] = [
         {"food_id": c.food_id, "title": c.title, "description": c.description} for c in ranked
     ]
-    await apply_candidate(fs, base, chosen=0)
+    if item.nutrition:
+        # С этикетки известна калорийность — выбираем Кандидата, который в неё
+        # укладывается, а не первого попавшегося: на салат из тунца поиск однажды
+        # вернул шоколад, и бот принял это молча.
+        base["label_kcal"] = item.nutrition.kcal
+        base["creatable"] = {
+            "name": item.name_ru,
+            "brand": item.brand or "fsbot",
+            "kcal": item.nutrition.kcal,
+            "protein": item.nutrition.protein,
+            "fat": item.nutrition.fat,
+            "carbs": item.nutrition.carbs,
+        }
+    await pick_best_candidate(fs, base)
     return base
 
 
@@ -159,6 +172,12 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
         item["error"] = "у продукта нет ни одной порции"
         return
 
+    mismatch = None
+    if item.get("label_kcal"):
+        ok, gap = matching.matches_label(item["label_kcal"], portions)
+        if not ok:
+            mismatch = gap
+
     item.update(
         chosen=chosen,
         food_id=candidate["food_id"],
@@ -172,7 +191,26 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
         fat=portion.nutrient("fat"),
         carbohydrate=portion.nutrient("carbohydrate"),
         error=None,
+        mismatch=mismatch,
     )
+
+
+async def pick_best_candidate(fs: FatSecretClient, item: dict) -> None:
+    """Взять первого Кандидата, чья калорийность сходится с этикеткой.
+
+    Если не сошёлся ни один — оставляем первого, но с пометкой расхождения: молча
+    записывать в Дневник продукт, который в два-три раза калорийнее съеденного,
+    нельзя, а решать за человека, что именно он ел, — не наше дело.
+    """
+    if not item.get("label_kcal"):
+        await apply_candidate(fs, item, chosen=0)
+        return
+
+    for position in range(len(item.get("candidates") or [])):
+        await apply_candidate(fs, item, chosen=position)
+        if item.get("food_id") and not item.get("mismatch"):
+            return
+    await apply_candidate(fs, item, chosen=0)
 
 
 async def create_own_food(

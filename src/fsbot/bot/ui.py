@@ -51,11 +51,19 @@ def render_draft(draft: dict) -> str:
                 lines.append(f"{index}. <b>{name}</b> — не нашёл в базе FatSecret")
             continue
         total += item["kcal"]
-        lines.append(
+        line = (
             f"{index}. <b>{escape(str(item['title']))}</b> — {escape(str(item['portion']))}\n"
             f"    {item['kcal']:g} ккал · Б {item['protein']:g} · "
             f"Ж {item['fat']:g} · У {item['carbohydrate']:g}"
         )
+        if item.get("mismatch"):
+            # Молчать тут нельзя: расхождение с этикеткой в разы означает, что нашёлся
+            # другой продукт, и записывать его — значит испортить Дневник.
+            line += (
+                f"\n    ⚠️ на этикетке {item['label_kcal']:g} ккал/100 г — "
+                f"расхождение {item['mismatch'] * 100:.0f}%, похоже, это другой продукт"
+            )
+        lines.append(line)
 
     meal = MEAL_RU[Meal(draft["meal"])]
     lines.append(f"\n<b>Итого: {total:g} ккал</b> · {meal} · {draft['day']}")
