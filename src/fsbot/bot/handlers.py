@@ -68,8 +68,8 @@ Powered by fatsecret · https://platform.fatsecret.com
 
 BARCODE_UNKNOWN = """Такого штрих-кода нет в базе FatSecret.
 
-Пришли фото упаковки с таблицей пищевой ценности — прочитаю КБЖУ, создам продукт
-в твоём аккаунте и запомню этот код: в следующий раз хватит одного сканирования."""
+Пришли фото упаковки с таблицей пищевой ценности — прочитаю КБЖУ, предложу создать
+продукт в твоём аккаунте и запомню этот код: в следующий раз хватит сканирования."""
 
 
 class Link(StatesGroup):
@@ -296,6 +296,26 @@ async def barcode(
     await _by_barcode(message, (message.text or "").strip(), state, storage, cfg, fs, user)
 
 
+async def _food_by_barcode(code: str, storage: Storage, fs: FatSecretClient, user) -> str | None:
+    """Своя Связка важнее базы: если мы уже создавали этот продукт, второе сканирование
+    не должно ни спрашивать фото, ни плодить дубль."""
+    food_id = await storage.bound_food(user.user_id, code)
+    if food_id:
+        log.info("штрих-код %s → свой продукт %s", code, food_id)
+        return food_id
+    try:
+        return await fs.food_id_by_barcode(code)
+    except FatSecretError as exc:
+        log.warning("поиск по штрих-коду не удался: %s", exc.message)
+        return None
+
+
+async def _show_food(note: Message, food_id: str, user, storage: Storage, cfg, fs) -> None:
+    draft = await draft_from_food(fs, food_id, user.tz or cfg.default_tz)
+    draft_id = await storage.save_draft(user.user_id, draft)
+    await note.edit_text(ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft))
+
+
 async def _by_barcode(
     message: Message,
     code: str,
@@ -305,29 +325,17 @@ async def _by_barcode(
     fs: FatSecretClient,
     user,
 ) -> None:
+    """Код пришёл цифрами: фото нет, поэтому при промахе остаётся попросить упаковку."""
     note = await message.answer("Ищу по штрих-коду…")
 
-    # Сначала своя Связка: она появляется, когда продукта не было в базе и мы его
-    # создали, — второй раз тот же товар не должен требовать ни фото, ни ввода.
-    food_id = await storage.bound_food(user.user_id, code)
-    if food_id:
-        log.info("штрих-код %s → свой продукт %s", code, food_id)
-    else:
-        try:
-            food_id = await fs.food_id_by_barcode(code)
-        except FatSecretError as exc:
-            await note.edit_text(f"FatSecret не ответил: {exc.message}")
-            return
-
+    food_id = await _food_by_barcode(code, storage, fs, user)
     if not food_id:
         await state.set_state(Barcode.waiting_label)
         await state.update_data(barcode=code)
         await note.edit_text(BARCODE_UNKNOWN)
         return
 
-    draft = await draft_from_food(fs, food_id, user.tz or cfg.default_tz)
-    draft_id = await storage.save_draft(user.user_id, draft)
-    await note.edit_text(ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft))
+    await _show_food(note, food_id, user, storage, cfg, fs)
 
 
 @router.message(Barcode.waiting_label, F.photo)
@@ -383,12 +391,20 @@ async def _photo_flow(
     # ошибиться в цифрах.
     scanned = barcodes.decode(buffer.getvalue())
     if scanned:
-        await note.delete()
-        await _by_barcode(message, scanned, state, storage, cfg, fs, user)
-        return
+        found = await _food_by_barcode(scanned, storage, fs, user)
+        if found:
+            await _show_food(note, found, user, storage, cfg, fs)
+            return
+        # Кода нет в базе — но фото уже у нас. Просить второе бессмысленно: разбираем
+        # это, а штрих-код передаём модели как подсказку и запоминаем для Связки.
+        log.info("штрих-код %s не найден в базе — разбираю фото", scanned)
+        await note.edit_text("Кода нет в базе FatSecret — читаю упаковку…")
+        barcode = scanned
 
     try:
-        recognition = await llm.recognize_photo(buffer.getvalue(), message.caption)
+        recognition = await llm.recognize_photo(
+            buffer.getvalue(), message.caption, barcode=barcode
+        )
     except LLMError as exc:
         log.warning("распознавание фото не удалось: %s", exc)
         await note.edit_text(_llm_failure_text(exc, "фото"))
