@@ -92,6 +92,11 @@ BARCODE_PROMPT = """Найди товар со штрих-кодом {barcode}.
 # примерно 90%, а стоят вместе меньше одной десятой цента.
 BARCODE_LOOKUP_ATTEMPTS = 3
 
+TRANSLATE_PROMPT = """Название продукта из базы: {name}
+Бренд: {brand}
+Верни только JSON: {{"name": "...", "brand": "..."}} — по-русски или по-английски.
+Бренд пиши латиницей. Ничего не добавляй от себя: это перевод, а не описание."""
+
 
 class OpenRouter:
     def __init__(
@@ -177,6 +182,34 @@ class OpenRouter:
             return None
         log.info("код %s опознан в вебе: %s (%s)", barcode, data.get("name"), data.get("source"))
         return data
+
+    async def translate_product(self, name: str, brand: str) -> tuple[str, str] | None:
+        """Перевести название и бренд в читаемый вид.
+
+        Открытая база многоязычна: израильский хумус приезжает как «חומוס לבנוני», а
+        это и нечитаемо, и разворачивает строку карточки. Числа при этом верные, так
+        что выбрасывать находку из-за письменности неправильно — надо перевести.
+        """
+        try:
+            raw = await self._complete(
+                self._text_models,
+                [
+                    {
+                        "role": "user",
+                        "content": TRANSLATE_PROMPT.format(name=name, brand=brand or "—"),
+                    }
+                ],
+                schema=False,
+            )
+            data = extract_json(raw)
+        except (LLMError, ParseError) as exc:
+            log.info("не удалось перевести название %r: %s", name, exc)
+            return None
+
+        translated = str(data.get("name") or "").strip()
+        if not translated:
+            return None
+        return translated, str(data.get("brand") or brand or "").strip()
 
     async def recognize_text(self, text: str) -> Recognition:
         messages = [

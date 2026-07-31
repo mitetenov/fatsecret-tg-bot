@@ -14,6 +14,8 @@ import logging
 
 import httpx
 
+from fsbot.domain.naming import pick_name
+
 log = logging.getLogger(__name__)
 
 API = "https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
@@ -21,7 +23,7 @@ API = "https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
 # Open Food Facts просит представляться: без внятного User-Agent запросы режут.
 USER_AGENT = "fsbot/0.1 (https://github.com/mitetenov/fatsecret-tg-bot)"
 
-FIELDS = "product_name,brands,nutriments"
+FIELDS = "product_name,product_name_ru,product_name_en,brands,brands_en,nutriments"
 
 NUTRIENTS = {
     "kcal_100g": "energy-kcal_100g",
@@ -41,7 +43,15 @@ def parse_product(payload: dict) -> dict | None:
         return None
 
     product = payload.get("product") or {}
-    name = (product.get("product_name") or "").strip()
+    # База многоязычная: у части товаров есть готовые русское и английское названия,
+    # и они предпочтительнее основного поля, которое заполняют на языке страны.
+    name = pick_name(
+        [
+            product.get("product_name_ru"),
+            product.get("product_name_en"),
+            product.get("product_name"),
+        ]
+    )
     if not name:
         return None
 
@@ -59,7 +69,12 @@ def parse_product(payload: dict) -> dict | None:
     if values["kcal_100g"] <= 0:
         return None
 
-    brand = (product.get("brands") or "").split(",")[0].strip()
+    brand = pick_name(
+        [
+            (product.get("brands_en") or "").split(",")[0],
+            (product.get("brands") or "").split(",")[0],
+        ]
+    )
     return {
         "found": True,
         "name": name,

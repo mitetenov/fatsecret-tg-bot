@@ -285,6 +285,9 @@ async def create_own_food(
 
 async def set_amount(fs: FatSecretClient, item: dict, amount: float) -> None:
     item["amount"] = amount
+    if item.get("creatable") and not item.get("candidates"):
+        # Продукта ещё нет — пересчитывать нечего, показ считается из спецификации.
+        return
     await apply_candidate(fs, item, item.get("chosen", 0))
 
 
