@@ -64,3 +64,29 @@ def test_date_hint_yesterday_survives_and_garbage_does_not():
 def test_no_usable_items_is_an_error(raw: str):
     with pytest.raises(ParseError):
         parse_recognition(raw)
+
+
+def test_label_gives_brand_barcode_and_nutrition():
+    raw = """{"kind":"label","barcode":"4 820000 000000","items":[
+      {"query_en":"sante milk 3.2","name_ru":"Молоко Sante 3.2%","amount":250,"unit":"ml",
+       "brand":"Sante","kcal_100g":60,"protein_100g":3,"fat_100g":3.2,"carbs_100g":4.7}]}"""
+    result = parse_recognition(raw)
+    assert result.barcode == "4820000000000"  # пробелы из вёрстки кода отброшены
+    item = result.items[0]
+    assert item.brand == "Sante"
+    assert item.nutrition.kcal == 60
+    assert item.nutrition.carbs == 4.7
+
+
+def test_partial_nutrition_is_refused():
+    # Неполные КБЖУ выглядят достоверно, но дают неверный продукт навсегда:
+    # удалить созданное через API нельзя.
+    raw = """{"kind":"label","items":[{"query_en":"x","name_ru":"Икс","amount":100,
+      "unit":"g","kcal_100g":100,"protein_100g":5}]}"""
+    assert parse_recognition(raw).items[0].nutrition is None
+
+
+def test_implausible_barcode_is_dropped():
+    raw = """{"kind":"label","barcode":"12","items":[
+      {"query_en":"x","name_ru":"Икс","amount":100,"unit":"g"}]}"""
+    assert parse_recognition(raw).barcode is None

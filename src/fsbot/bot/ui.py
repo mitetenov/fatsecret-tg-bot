@@ -20,6 +20,7 @@ ASK_GRAMS = "g"
 PICK_MEAL = "m"
 PICK_DATE = "d"
 BACK = "b"
+CREATE_FOOD = "n"
 
 
 def cb(draft_id: int, action: str, arg: str | int = "") -> str:
@@ -39,7 +40,15 @@ def render_draft(draft: dict) -> str:
     for index, item in enumerate(draft["items"], start=1):
         if not item.get("food_id"):
             name = escape(str(item["name_ru"]))
-            lines.append(f"{index}. <b>{name}</b> — не нашёл в базе FatSecret")
+            if item.get("creatable"):
+                spec = item["creatable"]
+                lines.append(
+                    f"{index}. <b>{name}</b> — в базе нет, но с этикетки считано:\n"
+                    f"    {spec['kcal']:g} ккал · Б {spec['protein']:g} · "
+                    f"Ж {spec['fat']:g} · У {spec['carbs']:g} на 100 г"
+                )
+            else:
+                lines.append(f"{index}. <b>{name}</b> — не нашёл в базе FatSecret")
             continue
         total += item["kcal"]
         lines.append(
@@ -53,16 +62,27 @@ def render_draft(draft: dict) -> str:
     return "\n".join(lines)
 
 
-def draft_keyboard(draft_id: int) -> dict:
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Записать", "callback_data": cb(draft_id, WRITE)},
-                {"text": "✏️ Изменить", "callback_data": cb(draft_id, EDIT)},
-                {"text": "❌ Отмена", "callback_data": cb(draft_id, CANCEL)},
-            ]
+def draft_keyboard(draft_id: int, draft: dict | None = None) -> dict:
+    rows = [
+        [
+            {"text": "✅ Записать", "callback_data": cb(draft_id, WRITE)},
+            {"text": "✏️ Изменить", "callback_data": cb(draft_id, EDIT)},
+            {"text": "❌ Отмена", "callback_data": cb(draft_id, CANCEL)},
         ]
-    }
+    ]
+    # Создание Свого продукта необратимо (в API нет удаления), поэтому только явной
+    # кнопкой и только там, где с этикетки есть полные КБЖУ.
+    for index, item in enumerate((draft or {}).get("items", [])):
+        if item.get("creatable"):
+            rows.append(
+                [
+                    {
+                        "text": f"➕ Создать «{item['name_ru'][:24]}»",
+                        "callback_data": cb(draft_id, CREATE_FOOD, index),
+                    }
+                ]
+            )
+    return {"inline_keyboard": rows}
 
 
 def edit_keyboard(draft_id: int, draft: dict) -> dict:

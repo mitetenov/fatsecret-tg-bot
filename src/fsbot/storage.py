@@ -179,6 +179,24 @@ class Storage:
         await self.db.execute("DELETE FROM drafts WHERE draft_id = ?", (draft_id,))
         await self.db.commit()
 
+    # --- Связки штрих-кодов -----------------------------------------------
+
+    async def bound_food(self, user_id: int, barcode: str) -> str | None:
+        async with self.db.execute(
+            "SELECT food_id FROM barcode_bindings WHERE user_id = ? AND barcode = ?",
+            (user_id, barcode),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["food_id"] if row else None
+
+    async def bind_barcode(self, user_id: int, barcode: str, food_id: str) -> None:
+        await self.db.execute(
+            "INSERT INTO barcode_bindings (user_id, barcode, food_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, barcode) DO UPDATE SET food_id = excluded.food_id",
+            (user_id, barcode, food_id),
+        )
+        await self.db.commit()
+
     # --- записанные пачки (для /undo) -------------------------------------
 
     async def save_batch(self, user_id: int, entry_ids: list[str]) -> None:

@@ -35,12 +35,49 @@ async def build_draft(
     recognition: Recognition,
     tz: str,
     recent: list[FoodSummary] | None = None,
+    barcode: str | None = None,
 ) -> dict:
     first = recognition.items[0]
     day, meal = resolve(tz, meal_hint=first.meal, date_hint=first.date_hint)
 
     items = [await _resolve_item(fs, item, recent or []) for item in recognition.items]
-    return {"day": day.isoformat(), "meal": meal.value, "items": items, "kind": recognition.kind}
+    return {
+        "day": day.isoformat(),
+        "meal": meal.value,
+        "items": items,
+        "kind": recognition.kind,
+        "barcode": barcode or recognition.barcode,
+    }
+
+
+async def draft_from_food(
+    fs: FatSecretClient, food_id: str, tz: str, amount: float = 100, unit: str = "g"
+) -> dict:
+    """Черновик по известному food_id — путь штрих-кода: продукт уже определён точно,
+    гадать нечего, остаётся уточнить количество."""
+    day, meal = resolve(tz)
+    food = await fs.get_food(food_id)
+    title = " ".join(filter(None, (food.get("brand_name"), food.get("food_name"))))
+    item = {
+        "name_ru": title,
+        "query": title,
+        "amount": amount,
+        "unit": unit,
+        "status": "pending",
+        "entry_id": None,
+        "error": None,
+        "candidates": [{"food_id": food_id, "title": title, "description": ""}],
+        "chosen": 0,
+        "food_id": None,
+    }
+    await apply_candidate(fs, item, chosen=0)
+    return {
+        "day": day.isoformat(),
+        "meal": meal.value,
+        "items": [item],
+        "kind": "barcode",
+        "barcode": None,
+    }
 
 
 async def _resolve_item(
@@ -61,11 +98,30 @@ async def _resolve_item(
 
     try:
         found = await fs.search_foods(item.query_en, max_results=MAX_CANDIDATES)
+        if not found:
+            # Автокомплит знает, как продукт называется в базе: LLM переводит «творог»
+            # то в «cottage cheese», то в «curd», и второе не находится.
+            for suggestion in (await fs.autocomplete(item.query_en))[:2]:
+                found = await fs.search_foods(suggestion, max_results=MAX_CANDIDATES)
+                if found:
+                    log.info("автокомплит помог: %r → %r", item.query_en, suggestion)
+                    break
     except FatSecretError as exc:
         base["error"] = exc.message
         return base
 
     if not found:
+        # Продукта в базе нет. Если с этикетки считаны КБЖУ — из них можно создать
+        # Свой продукт, но только по явной кнопке: удалить его через API нельзя.
+        if item.nutrition:
+            base["creatable"] = {
+                "name": item.name_ru,
+                "brand": item.brand or "fsbot",
+                "kcal": item.nutrition.kcal,
+                "protein": item.nutrition.protein,
+                "fat": item.nutrition.fat,
+                "carbs": item.nutrition.carbs,
+            }
         return base
 
     ranked = _rank(found, recent)
@@ -117,6 +173,30 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
         carbohydrate=portion.nutrient("carbohydrate"),
         error=None,
     )
+
+
+async def create_own_food(
+    fs: FatSecretClient, item: dict, token: str, token_secret: str
+) -> str | None:
+    """Создать Свой продукт из считанных с этикетки КБЖУ и подставить его в пункт."""
+    spec = item.get("creatable")
+    if not spec:
+        return None
+
+    food_id = await fs.create_food(
+        token,
+        token_secret,
+        name=spec["name"],
+        brand=spec["brand"],
+        kcal=spec["kcal"],
+        protein=spec["protein"],
+        fat=spec["fat"],
+        carbs=spec["carbs"],
+    )
+    item["candidates"] = [{"food_id": food_id, "title": spec["name"], "description": "свой"}]
+    item.pop("creatable", None)
+    await apply_candidate(fs, item, chosen=0)
+    return food_id
 
 
 async def set_amount(fs: FatSecretClient, item: dict, amount: float) -> None:
