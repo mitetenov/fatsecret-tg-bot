@@ -31,6 +31,7 @@ from fsbot.bot.pipeline import (
     write_draft,
 )
 from fsbot.config import Config
+from fsbot.domain import barcodes
 from fsbot.fatsecret.client import FatSecretClient, FatSecretError
 from fsbot.llm.openrouter import LLMError, OpenRouter
 from fsbot.storage import Storage
@@ -341,13 +342,14 @@ async def label_photo(
 ) -> None:
     data = await state.get_data()
     await state.clear()
-    await _photo_flow(message, bot, storage, cfg, fs, llm, barcode=data.get("barcode"))
+    await _photo_flow(message, bot, state, storage, cfg, fs, llm, barcode=data.get("barcode"))
 
 
 @router.message(F.photo)
 async def photo(
     message: Message,
     bot: Bot,
+    state: FSMContext,
     storage: Storage,
     cfg: Config,
     fs: FatSecretClient,
@@ -355,12 +357,13 @@ async def photo(
 ) -> None:
     if not await _gate(message, storage, cfg):
         return
-    await _photo_flow(message, bot, storage, cfg, fs, llm)
+    await _photo_flow(message, bot, state, storage, cfg, fs, llm)
 
 
 async def _photo_flow(
     message: Message,
     bot: Bot,
+    state: FSMContext,
     storage: Storage,
     cfg: Config,
     fs: FatSecretClient,
@@ -374,6 +377,15 @@ async def _photo_flow(
     note = await message.answer("Смотрю фото…")
     buffer = BytesIO()
     await bot.download(message.photo[-1], destination=buffer)
+
+    # Сначала декодер: если на фото есть штрих-код, продукт определяется точно, и
+    # звать LLM незачем — это лишние секунды, лишний запрос из лимита и лишний риск
+    # ошибиться в цифрах.
+    scanned = barcodes.decode(buffer.getvalue())
+    if scanned:
+        await note.delete()
+        await _by_barcode(message, scanned, state, storage, cfg, fs, user)
+        return
 
     try:
         recognition = await llm.recognize_photo(buffer.getvalue(), message.caption)

@@ -7,6 +7,9 @@ dependencies = [
     "aiogram>=3.27",
     "httpx>=0.28",
     "aiosqlite>=0.20",
+    # Штрих-код читается локально: точнее, быстрее и бесплатнее, чем vision-моделью.
+    "pyzbar>=0.1.9",
+    "pillow>=11",
 ]
 
 [project.optional-dependencies]

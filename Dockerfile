@@ -27,8 +27,19 @@ RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-compile -r /tmp/requirements.txt
 
 
+FROM python:3.14-alpine AS zbarlib
+
+# apk-пакет zbar тянет 47 зависимостей (python3, glib, gobject-introspection) — это
+# +127 МБ ради библиотеки в 196 КБ. Забираем только сам .so и его замыкание: ~3 МБ.
+RUN apk add --no-cache zbar \
+ && mkdir -p /libs \
+ && cp -L $(ldd /usr/lib/libzbar.so.0.3.0 | awk '/=>/ {print $3}') /libs/ \
+ && cp -L /usr/lib/libzbar.so.0.3.0 /libs/libzbar.so
+
+
 FROM deps AS test
 
+COPY --from=zbarlib /libs/ /usr/lib/
 RUN /opt/venv/bin/pip install --no-compile pytest pytest-asyncio
 ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH=/app/src
 COPY src ./src
@@ -62,6 +73,7 @@ RUN apk add --no-cache su-exec \
  && install -d -o fsbot -g fsbot /data
 
 COPY --from=prod-venv /opt/venv /opt/venv
+COPY --from=zbarlib /libs/ /usr/lib/
 
 WORKDIR /app
 COPY --chown=fsbot:fsbot src ./src
