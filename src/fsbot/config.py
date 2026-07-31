@@ -13,8 +13,11 @@ DEFAULT_TZ = "Asia/Tbilisi"
 # на каждом запросе может быть разной — в том числе без поддержки json_schema.
 # Разбор ответа поэтому обязан оставаться устойчивым (см. llm/parsing.py).
 # Пиновать конкретные модели можно через OPENROUTER_TEXT_MODELS / _VISION_MODELS.
-DEFAULT_TEXT_MODELS = "openrouter/free"
-DEFAULT_VISION_MODELS = "openrouter/free"
+# Основная — платная gemini-3.5-flash-lite (замерено: ~$0.0005 за фото, ~$0.0002 за
+# реплику), запасная — бесплатный роутер. Порядок именно такой: бесплатные модели то
+# заняты, то игнорируют json_schema, и цена вопроса тут — центы в месяц.
+DEFAULT_TEXT_MODELS = "google/gemini-3.5-flash-lite,openrouter/free"
+DEFAULT_VISION_MODELS = "google/gemini-3.5-flash-lite,openrouter/free"
 
 
 def _load_dotenv(path: Path) -> None:

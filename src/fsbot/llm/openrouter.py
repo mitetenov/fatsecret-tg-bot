@@ -130,17 +130,31 @@ class OpenRouter:
         ]
         return await self._recognize(self._text_models, messages)
 
-    async def recognize_photo(self, image: bytes, caption: str | None = None) -> Recognition:
+    async def recognize_photo(
+        self, image: bytes, caption: str | None = None, barcode: str | None = None
+    ) -> Recognition:
         data_url = "data:image/jpeg;base64," + base64.b64encode(image).decode()
-        kind = await self._classify(data_url)
+        # Штрих-код на фото есть, но FatSecret его не знает — значит это упаковка,
+        # и классифицировать нечего: сразу читаем этикетку.
+        kind = "label" if barcode else await self._classify(data_url)
         prompt = LABEL_PROMPT if kind == "label" else PLATE_PROMPT
         content: list[dict] = [
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": data_url}},
         ]
+        if barcode:
+            content.append(
+                {
+                    "type": "text",
+                    "text": f"На упаковке штрих-код {barcode}. Если знаешь этот товар — "
+                    "используй знание для названия и бренда, но КБЖУ бери только с фото.",
+                }
+            )
         if caption:
             content.append({"type": "text", "text": f"Подпись пользователя: {caption}"})
-        return await self._recognize(self._vision_models, [{"role": "user", "content": content}])
+        return await self._recognize(
+            self._vision_models, [{"role": "user", "content": content}]
+        )
 
     async def _classify(self, data_url: str) -> str:
         try:
