@@ -22,7 +22,7 @@ ACCESS_TOKEN_URL = "https://authentication.fatsecret.com/oauth/access_token"
 
 # Коды FatSecret, означающие «доступ пользователя больше не действителен».
 INVALID_TOKEN_CODES = {4, 9, 14}
-# Метод недоступен на тарифе — сюда попадают штрих-код и создание продуктов на Basic.
+# Метод недоступен на тарифе: на Basic так отвечали штрих-код и создание продуктов.
 FORBIDDEN_CODES = {12, 13, 21}
 
 

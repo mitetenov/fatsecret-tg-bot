@@ -87,3 +87,49 @@ def test_tolerance_boundary():
 
 def test_zero_label_kcal_never_rejects():
     assert deviation(0, 500) == 0.0
+
+
+SMOKED_TUNA = {
+    "servings": {
+        "serving": {
+            "serving_id": "9",
+            "serving_description": "100 g",
+            "metric_serving_amount": "100.000",
+            "metric_serving_unit": "g",
+            "number_of_units": "100.000",
+            "calories": "201",
+            "protein": "25.7",
+            "fat": "10.1",
+            "carbohydrate": "0",
+        }
+    }
+}
+
+TUNA_SALAD_LABEL = {"kcal": 186, "protein": 12, "fat": 12, "carbs": 6.7}
+
+
+def test_calories_alone_let_a_wrong_product_through():
+    # Регрессия: копчёный тунец расходится с салатом из тунца всего на 8% по калориям,
+    # и проверка по одним калориям его пропускала.
+    ok, _ = matches_label(TUNA_SALAD_LABEL["kcal"], parse_servings(SMOKED_TUNA))
+    assert ok
+
+
+def test_full_profile_rejects_it():
+    ok, gap = matches_label(TUNA_SALAD_LABEL, parse_servings(SMOKED_TUNA))
+    assert not ok
+    assert gap > 1.0  # белок вдвое выше
+
+
+def test_same_product_passes_full_profile():
+    ok, _ = matches_label(
+        {"kcal": 186, "protein": 19, "fat": 18, "carbs": 12}, parse_servings(TUNA_SALAD)
+    )
+    assert ok
+
+
+def test_trace_amounts_do_not_count_as_mismatch():
+    # 0.2 против 0.6 г углеводов — это «следы», а не разные продукты.
+    label = {"kcal": 201, "protein": 25.7, "fat": 10.1, "carbs": 0.2}
+    ok, _ = matches_label(label, parse_servings(SMOKED_TUNA))
+    assert ok

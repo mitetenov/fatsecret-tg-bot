@@ -17,7 +17,9 @@ from aiogram.types import (
 
 from fsbot.bot.handlers import router
 from fsbot.config import Config
+from fsbot.domain import barcodes
 from fsbot.fatsecret.client import FatSecretClient
+from fsbot.foodfacts import OpenFoodFacts
 from fsbot.llm.openrouter import OpenRouter
 from fsbot.storage import Storage
 
@@ -86,6 +88,7 @@ async def run() -> None:
 
     fatsecret = FatSecretClient(config.consumer_key, config.consumer_secret)
     llm = OpenRouter(config.openrouter_key, config.text_models, config.vision_models)
+    foodfacts = OpenFoodFacts()
 
     bot = Bot(
         token=config.telegram_token,
@@ -93,7 +96,9 @@ async def run() -> None:
     )
     dispatcher = Dispatcher(storage=MemoryStorage())
     dispatcher.include_router(router)
-    dispatcher.workflow_data.update(storage=storage, fs=fatsecret, llm=llm, cfg=config)
+    dispatcher.workflow_data.update(
+        storage=storage, fs=fatsecret, llm=llm, off=foodfacts, cfg=config
+    )
 
     await bot.set_my_commands(PUBLIC_COMMANDS, scope=BotCommandScopeDefault())
     await bot.set_my_commands(
@@ -101,7 +106,14 @@ async def run() -> None:
     )
 
     me = await bot.me()
-    log.info("бот @%s запущен, режим ограниченный (Basic: без штрих-кодов)", me.username)
+    # Раньше здесь стояла фраза про тариф, которую никто не проверял: тариф сменился,
+    # а строка осталась врать. Логируем только то, что можно подтвердить на месте.
+    log.info(
+        "бот @%s запущен · модели: %s · декодер штрих-кодов: %s",
+        me.username,
+        ", ".join(config.vision_models),
+        "доступен" if barcodes.available() else "НЕДОСТУПЕН, фото пойдут в LLM",
+    )
 
     heartbeat = asyncio.create_task(_heartbeat(config.state_dir / "heartbeat"))
 
@@ -109,6 +121,7 @@ async def run() -> None:
         await dispatcher.start_polling(bot)
     finally:
         heartbeat.cancel()
+        await foodfacts.close()
         await llm.close()
         await fatsecret.close()
         await storage.close()

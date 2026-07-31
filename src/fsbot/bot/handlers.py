@@ -23,6 +23,7 @@ from fsbot.bot import ui
 from fsbot.bot.pipeline import (
     apply_candidate,
     build_draft,
+    draft_from_web,
     create_own_food,
     draft_from_food,
     render_report,
@@ -33,6 +34,7 @@ from fsbot.bot.pipeline import (
 from fsbot.config import Config
 from fsbot.domain import barcodes
 from fsbot.fatsecret.client import FatSecretClient, FatSecretError
+from fsbot.foodfacts import OpenFoodFacts
 from fsbot.llm.openrouter import LLMError, OpenRouter
 from fsbot.storage import Storage
 
@@ -287,13 +289,26 @@ async def barcode(
     storage: Storage,
     cfg: Config,
     fs: FatSecretClient,
+    llm: OpenRouter,
+    off: OpenFoodFacts,
 ) -> None:
     if not await _gate(message, storage, cfg):
         return
     user = await _linked(message, storage)
     if not user:
         return
-    await _by_barcode(message, (message.text or "").strip(), state, storage, cfg, fs, user)
+    await _by_barcode(
+        message, (message.text or "").strip(), state, storage, cfg, fs, llm, off, user
+    )
+
+
+async def _lookup_product(code: str, off: OpenFoodFacts, llm: OpenRouter) -> dict | None:
+    """Открытая база сначала, модель — последней.
+
+    Open Food Facts отвечает одинаково на каждый запрос и бесплатно; веб-поиск моделью
+    на том же коде срабатывал в двух прогонах из пяти, поэтому он резерв, а не основа.
+    """
+    return await off.lookup(code) or await llm.lookup_barcode(code)
 
 
 async def _food_by_barcode(code: str, storage: Storage, fs: FatSecretClient, user) -> str | None:
@@ -323,19 +338,30 @@ async def _by_barcode(
     storage: Storage,
     cfg: Config,
     fs: FatSecretClient,
+    llm: OpenRouter,
+    off: OpenFoodFacts,
     user,
 ) -> None:
-    """Код пришёл цифрами: фото нет, поэтому при промахе остаётся попросить упаковку."""
     note = await message.answer("Ищу по штрих-коду…")
 
     food_id = await _food_by_barcode(code, storage, fs, user)
-    if not food_id:
-        await state.set_state(Barcode.waiting_label)
-        await state.update_data(barcode=code)
-        await note.edit_text(BARCODE_UNKNOWN)
+    if food_id:
+        await _show_food(note, food_id, user, storage, cfg, fs)
         return
 
-    await _show_food(note, food_id, user, storage, cfg, fs)
+    await note.edit_text("В базе FatSecret кода нет — ищу товар по коду…")
+    product = await _lookup_product(code, off, llm)
+    if product:
+        draft = draft_from_web(product, user.tz or cfg.default_tz, code)
+        draft_id = await storage.save_draft(user.user_id, draft)
+        await note.edit_text(
+            ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
+        )
+        return
+
+    await state.set_state(Barcode.waiting_label)
+    await state.update_data(barcode=code)
+    await note.edit_text(BARCODE_UNKNOWN)
 
 
 @router.message(Barcode.waiting_label, F.photo)
@@ -347,10 +373,13 @@ async def label_photo(
     cfg: Config,
     fs: FatSecretClient,
     llm: OpenRouter,
+    off: OpenFoodFacts,
 ) -> None:
     data = await state.get_data()
     await state.clear()
-    await _photo_flow(message, bot, state, storage, cfg, fs, llm, barcode=data.get("barcode"))
+    await _photo_flow(
+        message, bot, state, storage, cfg, fs, llm, off, barcode=data.get("barcode")
+    )
 
 
 @router.message(F.photo)
@@ -362,10 +391,11 @@ async def photo(
     cfg: Config,
     fs: FatSecretClient,
     llm: OpenRouter,
+    off: OpenFoodFacts,
 ) -> None:
     if not await _gate(message, storage, cfg):
         return
-    await _photo_flow(message, bot, state, storage, cfg, fs, llm)
+    await _photo_flow(message, bot, state, storage, cfg, fs, llm, off)
 
 
 async def _photo_flow(
@@ -376,6 +406,7 @@ async def _photo_flow(
     cfg: Config,
     fs: FatSecretClient,
     llm: OpenRouter,
+    off: OpenFoodFacts,
     barcode: str | None = None,
 ) -> None:
     user = await _linked(message, storage)
@@ -395,10 +426,20 @@ async def _photo_flow(
         if found:
             await _show_food(note, found, user, storage, cfg, fs)
             return
-        # Кода нет в базе — но фото уже у нас. Просить второе бессмысленно: разбираем
-        # это, а штрих-код передаём модели как подсказку и запоминаем для Связки.
-        log.info("штрих-код %s не найден в базе — разбираю фото", scanned)
-        await note.edit_text("Кода нет в базе FatSecret — читаю упаковку…")
+        # Кода нет в базе FatSecret. Искать там же по названию бессмысленно — если бы
+        # товар там был, он нашёлся бы по коду. Спрашиваем модель именно про код.
+        log.info("штрих-код %s не найден в базе — ищу товар по коду", scanned)
+        await note.edit_text("Кода нет в базе FatSecret — ищу товар по коду…")
+        product = await _lookup_product(scanned, off, llm)
+        if product:
+            draft = draft_from_web(product, user.tz or cfg.default_tz, scanned)
+            draft_id = await storage.save_draft(user.user_id, draft)
+            await note.edit_text(
+                ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
+            )
+            return
+        # Ни база, ни веб не знают товар — остаётся прочитать этикетку с фото.
+        await note.edit_text("Не нашёл товар по коду — читаю упаковку…")
         barcode = scanned
 
     try:
