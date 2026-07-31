@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS batches (
     created_at INTEGER NOT NULL
 );
 
--- Пока не используется: создание Своих продуктов недоступно на Basic.
+-- Связка «штрих-код → Свой продукт»: второе сканирование обходится без фото.
 CREATE TABLE IF NOT EXISTS barcode_bindings (
     user_id INTEGER NOT NULL,
     barcode TEXT NOT NULL,

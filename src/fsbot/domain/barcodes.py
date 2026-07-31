@@ -53,6 +53,21 @@ def _teach_ctypes_to_find_zbar() -> None:
     ctypes.util.find_library = find_library
 
 
+def available() -> bool:
+    """Загружается ли декодер здесь и сейчас.
+
+    Отвечает на вопрос фактом, а не убеждением: библиотека может отсутствовать в
+    образе или не находиться загрузчиком, и знать об этом надо при старте, а не когда
+    человек пришлёт первое фото.
+    """
+    try:
+        _teach_ctypes_to_find_zbar()
+        import pyzbar.pyzbar  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def decode(image: bytes) -> str | None:
     """Точный код с фото или None. Отсутствие декодера не должно ронять бота."""
     try:

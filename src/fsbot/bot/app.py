@@ -17,6 +17,7 @@ from aiogram.types import (
 
 from fsbot.bot.handlers import router
 from fsbot.config import Config
+from fsbot.domain import barcodes
 from fsbot.fatsecret.client import FatSecretClient
 from fsbot.llm.openrouter import OpenRouter
 from fsbot.storage import Storage
@@ -101,7 +102,14 @@ async def run() -> None:
     )
 
     me = await bot.me()
-    log.info("бот @%s запущен, режим ограниченный (Basic: без штрих-кодов)", me.username)
+    # Раньше здесь стояла фраза про тариф, которую никто не проверял: тариф сменился,
+    # а строка осталась врать. Логируем только то, что можно подтвердить на месте.
+    log.info(
+        "бот @%s запущен · модели: %s · декодер штрих-кодов: %s",
+        me.username,
+        ", ".join(config.vision_models),
+        "доступен" if barcodes.available() else "НЕДОСТУПЕН, фото пойдут в LLM",
+    )
 
     heartbeat = asyncio.create_task(_heartbeat(config.state_dir / "heartbeat"))
 
