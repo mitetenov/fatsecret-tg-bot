@@ -113,17 +113,30 @@ def by_units(servings: list[Serving], serving_id: str, multiplier: float) -> Por
     return Portion(serving=serving, multiplier=multiplier) if serving else None
 
 
+# Плотность напитков близка к единице (пиво ≈ 1.008, молоко ≈ 1.03), поэтому
+# миллилитры и граммы взаимозаменяемы с точностью, которой для дневника достаточно.
+INTERCHANGEABLE = {"g": "ml", "ml": "g"}
+
+
 def default_portion(servings: list[Serving], amount: float, unit: str) -> Portion | None:
     """Основной путь — метрический; если метрики нет, берём первую штучную Порцию.
+
+    Единицы приходится подменять: у пива в базе FatSecret все порции в граммах, а с
+    упаковки читается «450 ml». Без подмены совпадения не находилось, и код молча
+    сваливался на «1 штука порции» — карточка показывала 360 г независимо от того,
+    что просил человек, и правка количества выглядела как сломанная.
 
     Для штучной порции количество трактуется как число единиц, а не как граммы:
     «2 яйца» → 2 × «1 large egg». Пересчитать граммы в штуки без веса штуки нельзя,
     поэтому такой Кандидат обязан попасть на подтверждение с явным вопросом.
     """
-    if unit in {"g", "ml"}:
+    if unit in INTERCHANGEABLE:
         metric = by_metric_amount(servings, amount, unit)
         if metric:
             return metric
+        swapped = by_metric_amount(servings, amount, INTERCHANGEABLE[unit])
+        if swapped:
+            return swapped
     if not servings:
         return None
     return Portion(serving=servings[0], multiplier=amount if unit == "piece" else 1.0)
