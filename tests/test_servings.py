@@ -140,3 +140,78 @@ def test_missing_fields_do_not_crash_and_default_to_one_unit():
 
 def test_no_servings_at_all():
     assert default_portion([], 100, "g") is None
+
+
+BEER = {
+    "servings": {
+        "serving": [
+            {
+                "serving_id": "1",
+                "serving_description": "1 can or bottle (12 fl oz)",
+                "measurement_description": "can",
+                "number_of_units": "1.000",
+                "metric_serving_amount": "360.000",
+                "metric_serving_unit": "g",
+                "calories": "155",
+                "protein": "1.7",
+                "fat": "0",
+                "carbohydrate": "12.8",
+            },
+            {
+                "serving_id": "2",
+                "serving_description": "100 g",
+                "measurement_description": "g",
+                "number_of_units": "100.000",
+                "metric_serving_amount": "100.000",
+                "metric_serving_unit": "g",
+                "calories": "43",
+                "protein": "0.5",
+                "fat": "0",
+                "carbohydrate": "3.6",
+            },
+        ]
+    }
+}
+
+
+def test_millilitres_fall_back_to_gram_servings():
+    """Регрессия: у пива в базе только граммовые порции, а с банки читается «450 ml».
+
+    Без подмены единиц выбиралась штучная порция «1 can», количество игнорировалось,
+    и правка на другое число ничего не меняла.
+    """
+    portion = default_portion(parse_servings(BEER), 450, "ml")
+    assert portion is not None
+    assert portion.serving.serving_id == "2"
+    assert portion.grams == 450
+    assert portion.calories == 193.5
+
+
+def test_amount_change_is_visible_for_drinks():
+    servings = parse_servings(BEER)
+    assert default_portion(servings, 450, "ml").calories == 193.5
+    assert default_portion(servings, 330, "ml").calories == 141.9
+
+
+def test_exact_unit_still_wins_over_swap():
+    with_ml = {
+        "servings": {
+            "serving": [
+                BEER["servings"]["serving"][1],
+                {
+                    "serving_id": "3",
+                    "serving_description": "100 ml",
+                    "measurement_description": "ml",
+                    "number_of_units": "100.000",
+                    "metric_serving_amount": "100.000",
+                    "metric_serving_unit": "ml",
+                    "calories": "41",
+                    "protein": "0.4",
+                    "fat": "0",
+                    "carbohydrate": "3.4",
+                },
+            ]
+        }
+    }
+    portion = default_portion(parse_servings(with_ml), 450, "ml")
+    assert portion.serving.serving_id == "3"

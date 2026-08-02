@@ -175,6 +175,17 @@ class Storage:
             row = await cursor.fetchone()
         return json.loads(row["payload"]) if row else None
 
+    async def last_draft(self, user_id: int) -> tuple[int, dict] | None:
+        """Последний показанный черновик — чтобы голое число можно было понять как
+        количество, даже если человек не нажимал «Указать количество»."""
+        async with self.db.execute(
+            "SELECT draft_id, payload FROM drafts WHERE user_id = ? "
+            "ORDER BY draft_id DESC LIMIT 1",
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return (row["draft_id"], json.loads(row["payload"])) if row else None
+
     async def delete_draft(self, draft_id: int) -> None:
         await self.db.execute("DELETE FROM drafts WHERE draft_id = ?", (draft_id,))
         await self.db.commit()
