@@ -274,12 +274,39 @@ async def amount_reply(
         await message.answer("Черновик уже неактуален — пришли еду заново.")
         return
 
-    await set_amount(fs, draft["items"][index], float(match.group(0)))
-    await storage.update_draft(draft_id, draft)
     await state.clear()
-    await message.answer(
-        ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
-    )
+    await _apply_amount(message, draft_id, draft, index, float(match.group(0)), storage, fs)
+
+
+async def _apply_amount(
+    message: Message,
+    draft_id: int,
+    draft: dict,
+    index: int,
+    amount: float,
+    storage: Storage,
+    fs: FatSecretClient,
+) -> None:
+    """Пересчитать пункт и обновить ту же карточку.
+
+    Новым сообщением отвечать нельзя: прежняя карточка остаётся в чате с живыми
+    кнопками и старым количеством — человек видит «бот всё равно предлагает 360 г»
+    и жмёт «Записать» на устаревшем варианте.
+    """
+    await set_amount(fs, draft["items"][index], amount)
+    await storage.update_draft(draft_id, draft)
+
+    text, markup = ui.render_draft(draft), ui.draft_keyboard(draft_id, draft)
+    card = draft.get("card_message_id")
+    if card:
+        with suppress(Exception):
+            await message.bot.edit_message_text(
+                text, chat_id=message.chat.id, message_id=card, reply_markup=markup
+            )
+            return
+    sent = await message.answer(text, reply_markup=markup)
+    draft["card_message_id"] = sent.message_id
+    await storage.update_draft(draft_id, draft)
 
 
 @router.message(F.text.regexp(BARCODE))
@@ -368,6 +395,8 @@ async def _by_barcode(
     if product:
         draft = draft_from_web(product, user.tz or cfg.default_tz, code)
         draft_id = await storage.save_draft(user.user_id, draft)
+        draft["card_message_id"] = note.message_id
+        await storage.update_draft(draft_id, draft)
         await note.edit_text(
             ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
         )
@@ -448,6 +477,8 @@ async def _photo_flow(
         if product:
             draft = draft_from_web(product, user.tz or cfg.default_tz, scanned)
             draft_id = await storage.save_draft(user.user_id, draft)
+            draft["card_message_id"] = note.message_id
+            await storage.update_draft(draft_id, draft)
             await note.edit_text(
                 ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
             )
@@ -466,6 +497,36 @@ async def _photo_flow(
         return
 
     await _present(note, recognition, user, storage, fs, cfg, barcode=barcode)
+
+
+AMOUNT_ONLY = re.compile(r"^\d{1,4}([.,]\d+)?\s*(г|гр|g|мл|ml)?$", re.IGNORECASE)
+
+
+@router.message(F.text.regexp(AMOUNT_ONLY))
+async def bare_amount(
+    message: Message, storage: Storage, cfg: Config, fs: FatSecretClient, llm: OpenRouter
+) -> None:
+    """«450» после карточки — это правка количества, а не новая еда.
+
+    Нажимать «Изменить → Указать количество» ради одного числа никто не хочет, а
+    отправлять его в распознавание бессмысленно: продукта в нём нет.
+    """
+    if not await _gate(message, storage, cfg):
+        return
+    user = await _linked(message, storage)
+    if not user:
+        return
+
+    latest = await storage.last_draft(user.user_id)
+    if not latest or len(latest[1].get("items", [])) != 1:
+        # Карточки нет или пунктов несколько — непонятно, к чему относить число.
+        await text(message, storage, cfg, fs, llm)
+        return
+
+    draft_id, draft = latest
+    amount = float(re.sub(r"[^\d.,]", "", message.text).replace(",", "."))
+    log.info("число %s применяю к черновику %s без кнопки", amount, draft_id)
+    await _apply_amount(message, draft_id, draft, 0, amount, storage, fs)
 
 
 @router.message(F.text)
@@ -516,6 +577,8 @@ async def _present(
     log.info("кандидаты найдены для %d из %d позиций", found, len(draft["items"]))
 
     draft_id = await storage.save_draft(user.user_id, draft)
+    draft["card_message_id"] = note.message_id
+    await storage.update_draft(draft_id, draft)
     await note.edit_text(
         ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
     )
