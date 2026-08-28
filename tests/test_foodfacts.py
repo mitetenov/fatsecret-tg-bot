@@ -5,7 +5,11 @@
 удалить его через API FatSecret нечем.
 """
 
-from fsbot.foodfacts import parse_product
+import asyncio
+
+import httpx
+
+from fsbot.foodfacts import OpenFoodFacts, parse_product
 
 TUNA_SALAD = {
     "status": 1,
@@ -91,3 +95,34 @@ def test_liquid_nutrition_keeps_100ml_basis():
     product = parse_product(payload)
 
     assert product["nutrition_basis"] == "ml"
+
+
+async def lookup_with_transport(handler):
+    off = OpenFoodFacts()
+    await off._client.aclose()
+    off._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        return await off.lookup("0036000291452")
+    finally:
+        await off.close()
+
+
+def test_lookup_sends_restricted_fields_and_parses_product():
+    def handler(request):
+        assert request.url.path.endswith("/0036000291452.json")
+        fields = request.url.params["fields"]
+        assert "nutriments" in fields
+        assert "product_quantity_unit" in fields
+        return httpx.Response(200, json=TUNA_SALAD)
+
+    product = asyncio.run(lookup_with_transport(handler))
+
+    assert product["name"] == "Beans and Smoked Tuna"
+    assert product["confidence"] == 0.9
+
+
+def test_lookup_network_failure_is_a_normal_miss_not_a_crash():
+    def handler(request):
+        raise httpx.ConnectError("offline", request=request)
+
+    assert asyncio.run(lookup_with_transport(handler)) is None

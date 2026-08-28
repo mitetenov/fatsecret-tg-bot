@@ -1,8 +1,13 @@
 """Контракты клиента FatSecret, не требующие живого API."""
 
 import asyncio
+from datetime import date
 
-from fsbot.fatsecret.client import FatSecretClient
+import httpx
+import pytest
+
+from fsbot.domain.daybounds import Meal
+from fsbot.fatsecret.client import FatSecretClient, FatSecretError
 
 
 class RecordingClient(FatSecretClient):
@@ -130,3 +135,71 @@ def test_barcode_v2_food_is_reused_by_following_get():
 
     assert food["food_id"] == "4384"
     assert client.calls == ["food.find_id_for_barcode.v2"]
+
+
+class ErrorClient(FatSecretClient):
+    def __init__(self, code):
+        self.code = code
+
+    async def _call(self, api_method, token=None, token_secret="", **params):
+        raise FatSecretError(self.code, "not found")
+
+
+def test_barcode_v2_code_211_means_absent_product_not_failed_lookup():
+    assert asyncio.run(ErrorClient(211).food_id_by_barcode("036000291452")) is None
+
+
+def test_barcode_v2_propagates_real_api_errors():
+    with pytest.raises(FatSecretError) as raised:
+        asyncio.run(ErrorClient(9).food_id_by_barcode("036000291452"))
+    assert raised.value.token_invalid
+
+
+def test_create_entry_sends_exact_legacy_diary_contract():
+    client = PayloadClient({"food_entry_id": {"value": "entry-1"}})
+
+    entry_id = asyncio.run(
+        client.create_entry(
+            "token",
+            "secret",
+            food_id="9",
+            serving_id="91",
+            units=2.34567,
+            entry_name="Very long soup name",
+            meal=Meal.LUNCH,
+            day=date(2026, 8, 28),
+        )
+    )
+
+    method, params = client.calls[0]
+    assert entry_id == "entry-1"
+    assert method == "food_entry.create"
+    assert params["food_id"] == "9"
+    assert params["serving_id"] == "91"
+    assert params["number_of_units"] == "2.3457"
+    assert params["meal"] == "lunch"
+    assert isinstance(params["date"], int)
+
+
+async def call_with_transport(handler):
+    client = FatSecretClient("consumer", "secret")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        return await client._call("foods.search.v5", search_expression="milk")
+    finally:
+        await client.close()
+
+
+def test_low_level_call_maps_fatsecret_json_error_to_domain_error():
+    def handler(request):
+        assert request.url.params["method"] == "foods.search.v5"
+        assert request.url.params["search_expression"] == "milk"
+        assert request.url.params["oauth_signature"]
+        return httpx.Response(200, json={"error": {"code": 21, "message": "denied"}})
+
+    with pytest.raises(FatSecretError) as raised:
+        asyncio.run(call_with_transport(handler))
+
+    assert raised.value.code == 21
+    assert raised.value.not_available_on_tier

@@ -1,7 +1,7 @@
 import asyncio
 
 from fsbot.bot.pipeline import build_draft, draft_from_web
-from fsbot.fatsecret.client import FoodSummary
+from fsbot.fatsecret.client import FatSecretError, FoodSummary
 from fsbot.llm.parsing import Nutrition, Recognition, RecognizedItem
 
 
@@ -97,3 +97,80 @@ def test_web_liquid_draft_preserves_ml_basis_and_confidence():
     assert item["creatable"]["basis_unit"] == "ml"
     assert draft["confidence"] == 0.9
     assert draft["needs_review"] is False
+
+
+class AutocompleteFatSecret(SearchOnlyFatSecret):
+    def __init__(self):
+        super().__init__()
+        self.searches = []
+
+    async def search_foods(self, query, max_results=5):
+        self.searches.append(query)
+        if query == "tvorog":
+            return []
+        return [FoodSummary("9", "Cottage Cheese", None, "", details=FOOD)]
+
+    async def autocomplete(self, expression):
+        return ["cottage cheese"]
+
+
+def test_autocomplete_fallback_uses_database_vocabulary():
+    fs = AutocompleteFatSecret()
+    recognition = Recognition(
+        kind="text",
+        items=[RecognizedItem("tvorog", "творог", 200, "g", confidence=0.8)],
+    )
+
+    result = asyncio.run(build_draft(fs, recognition, "UTC"))
+
+    assert fs.searches == ["tvorog", "cottage cheese"]
+    assert result["items"][0]["food_id"] == "9"
+
+
+class EmptyFatSecret:
+    async def search_foods(self, query, max_results=5):
+        return []
+
+    async def autocomplete(self, expression):
+        return []
+
+
+def test_missing_liquid_product_remains_creatable_with_ml_basis():
+    recognition = Recognition(
+        kind="label",
+        items=[
+            RecognizedItem(
+                "milk",
+                "молоко",
+                450,
+                "ml",
+                brand="Sante",
+                nutrition=Nutrition(60, 3, 3.2, 4.7, "ml"),
+                confidence=0.7,
+            )
+        ],
+    )
+
+    result = asyncio.run(build_draft(EmptyFatSecret(), recognition, "UTC"))
+
+    item = result["items"][0]
+    assert item["food_id"] is None
+    assert item["creatable"]["basis_unit"] == "ml"
+    assert item["creatable"]["brand"] == "Sante"
+
+
+class FailedSearchFatSecret:
+    async def search_foods(self, query, max_results=5):
+        raise FatSecretError(21, "search unavailable")
+
+
+def test_search_error_is_shown_in_draft_instead_of_crashing_pipeline():
+    recognition = Recognition(
+        kind="text",
+        items=[RecognizedItem("soup", "суп", 300, "g", confidence=0.8)],
+    )
+
+    result = asyncio.run(build_draft(FailedSearchFatSecret(), recognition, "UTC"))
+
+    assert result["items"][0]["error"] == "search unavailable"
+    assert result["items"][0]["food_id"] is None

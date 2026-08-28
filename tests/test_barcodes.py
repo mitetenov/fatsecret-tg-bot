@@ -5,7 +5,9 @@
 не понимая, что бот прочитал не тот код.
 """
 
-from fsbot.domain.barcodes import fatsecret_gtin13, plausible, valid_gtin
+import pytest
+
+from fsbot.domain.barcodes import expand_upce, fatsecret_gtin13, plausible, valid_gtin
 
 
 def test_ean13_is_taken():
@@ -61,3 +63,32 @@ def test_isbn_is_not_selected_as_food_barcode():
 def test_unknown_symbology_needs_a_valid_checksum():
     assert plausible([("1234567890123", "QRCODE")]) is None
     assert plausible([("4006381333931", "QRCODE")]) == "4006381333931"
+
+
+def _check_digit(data: str) -> str:
+    total = sum(
+        int(digit) * (3 if index % 2 == 0 else 1)
+        for index, digit in enumerate(reversed(data))
+    )
+    return str((10 - total % 10) % 10)
+
+
+@pytest.mark.parametrize(
+    ("body", "upca_data"),
+    [
+        ("421000", "04200000100"),  # последняя цифра 0/1/2
+        ("123453", "01230000045"),  # последняя цифра 3
+        ("123454", "01234000005"),  # последняя цифра 4
+        ("123455", "01234500005"),  # последняя цифра 5..9
+    ],
+)
+def test_every_upce_compression_rule_expands_to_expected_upca(body, upca_data):
+    expected = upca_data + _check_digit(upca_data)
+    upce = "0" + body + expected[-1]
+
+    assert expand_upce(upce) == expected
+
+
+@pytest.mark.parametrize("value", ["123", "A4210005", "24210005"])
+def test_invalid_upce_shape_or_number_system_is_rejected(value):
+    assert expand_upce(value) is None
