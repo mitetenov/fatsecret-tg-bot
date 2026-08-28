@@ -11,6 +11,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from fsbot.domain import nutrition as nutrition_rules
+
 UNITS = {"g", "ml", "piece"}
 MEALS = {"breakfast", "lunch", "dinner", "other"}
 
@@ -186,6 +188,6 @@ def _parse_nutrition(entry: dict) -> Nutrition | None:
             values[field_name] = float(entry[key])
         except (KeyError, TypeError, ValueError):
             return None
-    if values["kcal"] <= 0:
+    if not nutrition_rules.plausible(**values):
         return None
     return Nutrition(**values)

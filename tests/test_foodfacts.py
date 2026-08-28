@@ -58,3 +58,19 @@ def test_nameless_product_is_refused():
 def test_first_brand_is_taken():
     payload = {**TUNA_SALAD, "product": {**TUNA_SALAD["product"], "brands": "Trata, Konva"}}
     assert parse_product(payload)["brand"] == "Trata"
+
+
+def test_impossible_complete_nutrition_is_refused():
+    payload = {
+        **TUNA_SALAD,
+        "product": {
+            **TUNA_SALAD["product"],
+            "nutriments": {
+                "energy-kcal_100g": 50,
+                "proteins_100g": 25,
+                "fat_100g": 25,
+                "carbohydrates_100g": 25,
+            },
+        },
+    }
+    assert parse_product(payload) is None

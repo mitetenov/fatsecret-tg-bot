@@ -86,6 +86,13 @@ def test_partial_nutrition_is_refused():
     assert parse_recognition(raw).items[0].nutrition is None
 
 
+def test_impossible_complete_nutrition_is_refused():
+    raw = """{"kind":"label","items":[{"query_en":"x","name_ru":"Икс",
+      "amount":100,"unit":"g","kcal_100g":50,"protein_100g":25,
+      "fat_100g":25,"carbs_100g":25}]}"""
+    assert parse_recognition(raw).items[0].nutrition is None
+
+
 def test_implausible_barcode_is_dropped():
     raw = """{"kind":"label","barcode":"12","items":[
       {"query_en":"x","name_ru":"Икс","amount":100,"unit":"g"}]}"""

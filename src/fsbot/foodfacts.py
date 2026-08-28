@@ -14,6 +14,7 @@ import logging
 
 import httpx
 
+from fsbot.domain import nutrition as nutrition_rules
 from fsbot.domain.naming import pick_name
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,12 @@ def parse_product(payload: dict) -> dict | None:
         except (TypeError, ValueError):
             return None
 
-    if values["kcal_100g"] <= 0:
+    if not nutrition_rules.plausible(
+        values["kcal_100g"],
+        values["protein_100g"],
+        values["fat_100g"],
+        values["carbs_100g"],
+    ):
         return None
 
     brand = pick_name(
