@@ -7,6 +7,7 @@ import logging
 
 import httpx
 
+from fsbot.domain import nutrition as nutrition_rules
 from fsbot.llm.parsing import (
     RECOGNITION_SCHEMA,
     ParseError,
@@ -26,7 +27,8 @@ TEXT_PROMPT = """Ты разбираешь короткие реплики о с
 amount (число), unit ("g", "ml" или "piece"), meal (breakfast/lunch/dinner/other,
 только если человек назвал приём пищи явно), date_hint ("yesterday", только если
 человек сказал «вчера»).
-Если количество не названо — оцени типичную порцию и всё равно укажи число.
+confidence — число 0..1: насколько уверенно определены продукт и количество.
+Если количество не названо — оцени типичную порцию и снизь confidence.
 Штучные продукты переводи в граммы, если знаешь типичный вес: «2 яйца» → 110 g.
 Для славянских продуктов, у которых нет точного английского аналога, давай
 транслитерацию: «творог» → "tvorog", «кефир» → "kefir", «ряженка» → "ryazhenka".
@@ -41,6 +43,7 @@ PLATE_PROMPT = """На фото еда или напиток. Определи �
 Верни JSON: {"kind":"plate","items":[...]}, где на каждое блюдо — объект с полями
 query_en (короткий английский поисковый запрос для базы продуктов США), name_ru
 (название по-русски), amount (граммы, число), unit ("g").
+confidence — число 0..1; снижай его при неоднозначном блюде или приблизительном весе.
 Оценивай вес по видимому объёму; лучше приблизительно, чем пропустить блюдо.
 Отвечай только JSON, без пояснений."""
 
@@ -54,9 +57,10 @@ name_ru — название по-русски или по-английски. �
 строка рядом с местной («TUNA SALAD WITH BEANS» под грузинским текстом) — бери её.
 Если её нет, переведи название на русский. Не оставляй название грузинским, греческим
 или армянским: оно попадёт в дневник питания навсегда и станет нечитаемым.
-brand (бренд как на упаковке, латиницей),
+brand (бренд как на упаковке, латиницей), confidence — число 0..1,
 unit ("g" для веса, "ml" для объёма),
-kcal_100g, protein_100g, fat_100g, carbs_100g — числа из таблицы в пересчёте на 100 г.
+nutrition_basis — "100g" или "100ml" ровно как на этикетке;
+kcal_per_100, protein_per_100, fat_per_100, carbs_per_100 — числа на эту базу.
 Если таблица дана на порцию, а не на 100 г, пересчитай сам.
 Указывай КБЖУ только если уверенно прочитал все четыре числа: неполные данные хуже
 отсутствующих, по ним будет создан неверный продукт.
@@ -88,7 +92,9 @@ BARCODE_PROMPT = """Найди товар со штрих-кодом {barcode}.
 Название дай по-русски или по-английски — оно попадёт в дневник питания навсегда;
 не оставляй его на языке сайта-источника.
 Верни только JSON: {{"found": true/false, "name": "название", "brand": "бренд",
-"kcal_100g": число, "protein_100g": число, "fat_100g": число, "carbs_100g": число,
+"nutrition_basis": "100g" или "100ml", "kcal_per_100": число,
+"protein_per_100": число, "fat_per_100": число, "carbs_per_100": число,
+"confidence": число 0..1,
 "source": "домен, откуда взяты данные"}}
 Если данных нет — {{"found": false}}. Не выдумывай числа: без источника ставь false."""
 
@@ -122,39 +128,55 @@ class OpenRouter:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def _complete_one(
+        self, model: str, messages: list[dict], schema: bool
+    ) -> str:
+        """Один запрос к конкретной модели с проверкой envelope OpenRouter."""
+        body: dict = {"model": model, "messages": messages}
+        if schema:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": RECOGNITION_SCHEMA,
+            }
+            body["provider"] = {"require_parameters": True}
+        try:
+            response = await self._client.post(ENDPOINT, headers=self._headers, json=body)
+        except httpx.HTTPError as exc:
+            raise LLMError(f"{model}: {exc}", [0]) from exc
+
+        if response.status_code != 200:
+            raise LLMError(
+                f"{model}: HTTP {response.status_code} {response.text[:160]}",
+                [response.status_code],
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LLMError(f"{model}: ответ OpenRouter не JSON", [0]) from exc
+        if not isinstance(payload, dict):
+            raise LLMError(f"{model}: неожиданный ответ OpenRouter", [0])
+
+        choices = payload.get("choices") or []
+        if not isinstance(choices, list) or not choices:
+            raise LLMError(f"{model}: пустой ответ {payload.get('error')}", [0])
+        first = choices[0]
+        message = first.get("message") if isinstance(first, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise LLMError(f"{model}: ответ не содержит текст", [0])
+        return content
+
     async def _complete(self, models: list[str], messages: list[dict], schema: bool) -> str:
         """Пробуем модели по списку: бесплатные то заняты, то не умеют json_schema."""
         errors: list[str] = []
         statuses: list[int] = []
         for model in models:
-            body: dict = {"model": model, "messages": messages}
-            if schema:
-                body["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": RECOGNITION_SCHEMA,
-                }
             try:
-                response = await self._client.post(
-                    ENDPOINT, headers=self._headers, json=body
-                )
-            except httpx.HTTPError as exc:
-                errors.append(f"{model}: {exc}")
-                statuses.append(0)
-                continue
-
-            if response.status_code != 200:
-                errors.append(f"{model}: HTTP {response.status_code} {response.text[:160]}")
-                statuses.append(response.status_code)
-                continue
-
-            payload = response.json()
-            choices = payload.get("choices") or []
-            if not choices:
-                errors.append(f"{model}: пустой ответ {payload.get('error')}")
-                statuses.append(0)
-                continue
-            return choices[0]["message"]["content"] or ""
-
+                return await self._complete_one(model, messages, schema)
+            except LLMError as exc:
+                errors.append(str(exc))
+                statuses.extend(exc.statuses)
         raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
 
     async def lookup_barcode(self, barcode: str) -> dict | None:
@@ -185,8 +207,15 @@ class OpenRouter:
 
         if not data.get("found"):
             return None
-        log.info("код %s опознан в вебе: %s (%s)", barcode, data.get("name"), data.get("source"))
-        return data
+        product = _normalize_lookup_product(data)
+        if product:
+            log.info(
+                "код %s опознан в вебе: %s (%s)",
+                barcode,
+                product.get("name"),
+                product.get("source"),
+            )
+        return product
 
     async def translate_product(self, name: str, brand: str) -> tuple[str, str] | None:
         """Перевести название и бренд в читаемый вид.
@@ -269,18 +298,62 @@ class OpenRouter:
         return "label" if "label" in answer.lower() else "plate"
 
     async def _recognize(self, models: list[str], messages: list[dict]) -> Recognition:
-        raw = await self._complete(models, messages, schema=True)
-        try:
-            return parse_recognition(raw)
-        except ParseError as first:
-            log.warning("ответ модели не разобран (%s), повторяю без схемы", first)
+        errors: list[str] = []
+        statuses: list[int] = []
+        for model in models:
+            try:
+                raw = await self._complete_one(model, messages, schema=True)
+                return parse_recognition(raw)
+            except (LLMError, ParseError) as first:
+                log.warning("ответ модели %s не разобран (%s), повторяю без схемы", model, first)
+                errors.append(f"{model}: {first}")
+                statuses.extend(first.statuses if isinstance(first, LLMError) else [0])
 
-        retry = [*messages, {"role": "user", "content": "Верни только валидный JSON."}]
-        raw = await self._complete(models, retry, schema=False)
-        # Разбор повтора тоже может не удаться — например, если человек прислал голое
-        # число или модель ничего не распознала. Это нормальный исход, а не авария:
-        # наружу уходит LLMError, который хендлеры умеют превращать в понятный ответ.
+            retry = [
+                *messages,
+                {"role": "user", "content": "Верни только валидный JSON."},
+            ]
+            try:
+                raw = await self._complete_one(model, retry, schema=False)
+                return parse_recognition(raw)
+            except (LLMError, ParseError) as second:
+                errors.append(f"{model} repair: {second}")
+                statuses.extend(second.statuses if isinstance(second, LLMError) else [0])
+                log.warning("модель %s не прошла repair, пробую следующую", model)
+
+        raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
+
+
+def _normalize_lookup_product(data: dict) -> dict | None:
+    name = str(data.get("name") or "").strip()
+    source = str(data.get("source") or "").strip()
+    if not name or not source:
+        return None
+    basis = str(data.get("nutrition_basis") or "100g").lower().replace(" ", "")
+    basis_unit = "ml" if basis in {"100ml", "ml"} else "g"
+    values: dict[str, float] = {}
+    for field in ("kcal", "protein", "fat", "carbs"):
+        raw = data.get(f"{field}_per_100")
+        if raw is None:
+            raw = data.get(f"{field}_100{basis_unit}")
         try:
-            return parse_recognition(raw)
-        except ParseError as second:
-            raise LLMError(f"разбор не удался дважды: {second}") from second
+            values[field] = float(raw)
+        except (TypeError, ValueError):
+            return None
+    if not nutrition_rules.plausible(**values):
+        return None
+    try:
+        confidence = float(data.get("confidence", 0.6))
+    except (TypeError, ValueError):
+        confidence = 0.6
+    return {
+        **data,
+        "name": name,
+        "source": source,
+        "nutrition_basis": basis_unit,
+        "confidence": round(max(0.0, min(0.75, confidence)), 2),
+        "kcal_per_100": values["kcal"],
+        "protein_per_100": values["protein"],
+        "fat_per_100": values["fat"],
+        "carbs_per_100": values["carbs"],
+    }

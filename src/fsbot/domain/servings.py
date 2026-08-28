@@ -89,11 +89,15 @@ class Portion:
 
 
 def parse_servings(food: dict) -> list[Serving]:
-    """FatSecret отдаёт одну порцию объектом, несколько — списком."""
+    """FatSecret отдаёт одну порцию объектом, несколько — списком.
+
+    В food.get.v5 serving_id=0 означает вычисленную порцию на 100 г/мл. Она удобна
+    для показа, но FatSecret прямо запрещает использовать её в food_entry.create.
+    """
     raw = (food.get("servings") or {}).get("serving") or []
     if isinstance(raw, dict):
         raw = [raw]
-    return [Serving.from_api(item) for item in raw]
+    return [Serving.from_api(item) for item in raw if str(item.get("serving_id", "")) != "0"]
 
 
 def by_metric_amount(servings: list[Serving], amount: float, unit: str) -> Portion | None:

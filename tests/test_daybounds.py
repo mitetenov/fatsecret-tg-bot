@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from fsbot.bot.pipeline import shift_day
 from fsbot.domain.daybounds import (
     Meal,
     diary_date,
@@ -82,3 +83,31 @@ def test_fatsecret_date_is_days_since_epoch():
     assert to_fatsecret_date(date(1970, 1, 1)) == 0
     assert to_fatsecret_date(date(1970, 1, 2)) == 1
     assert from_fatsecret_date(to_fatsecret_date(date(2026, 7, 30))) == date(2026, 7, 30)
+
+
+def test_shift_day_uses_users_timezone_and_diary_boundary():
+    moment = utc("2026-07-30 02:30")
+    tbilisi = {"day": "2000-01-01"}
+    los_angeles = {"day": "2000-01-01"}
+
+    shift_day(tbilisi, "today", "Asia/Tbilisi", moment)
+    shift_day(los_angeles, "today", "America/Los_Angeles", moment)
+
+    assert tbilisi["day"] == "2026-07-30"
+    assert los_angeles["day"] == "2026-07-29"
+
+
+def test_shift_day_yesterday_is_relative_to_diary_today():
+    draft = {"day": "2000-01-01"}
+
+    shift_day(draft, "yesterday", "Asia/Tbilisi", utc("2026-07-30 02:30"))
+
+    assert draft["day"] == "2026-07-29"
+
+
+def test_unknown_shift_hint_keeps_existing_date():
+    draft = {"day": "2026-01-02"}
+
+    shift_day(draft, "tomorrow", "Asia/Tbilisi", utc("2026-07-30 02:30"))
+
+    assert draft["day"] == "2026-01-02"

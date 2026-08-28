@@ -12,6 +12,7 @@ from datetime import date
 
 import httpx
 
+from fsbot.domain.barcodes import fatsecret_gtin13
 from fsbot.domain.daybounds import Meal, to_fatsecret_date
 from fsbot.fatsecret.oauth1 import signed_params
 
@@ -47,6 +48,7 @@ class FoodSummary:
     name: str
     brand: str | None
     description: str
+    details: dict | None = None
 
     @property
     def title(self) -> str:
@@ -60,6 +62,7 @@ class FatSecretClient:
         self._key = consumer_key
         self._secret = consumer_secret
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._food_cache: dict[str, dict] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -125,9 +128,14 @@ class FatSecretClient:
 
     async def search_foods(self, query: str, max_results: int = 5) -> list[FoodSummary]:
         payload = await self._call(
-            "foods.search", search_expression=query, max_results=max_results
+            "foods.search.v5",
+            search_expression=query,
+            max_results=max_results,
+            flag_default_serving=True,
         )
-        raw = (payload.get("foods") or {}).get("food") or []
+        search = payload.get("foods_search") or {}
+        raw = ((search.get("results") or {}).get("food")
+               or (payload.get("foods") or {}).get("food") or [])
         if isinstance(raw, dict):
             raw = [raw]
         return [
@@ -136,18 +144,26 @@ class FatSecretClient:
                 name=item.get("food_name", ""),
                 brand=item.get("brand_name"),
                 description=item.get("food_description", ""),
+                details=item if item.get("servings") else None,
             )
             for item in raw
         ]
 
     async def get_food(self, food_id: str) -> dict:
-        payload = await self._call("food.get", food_id=food_id)
+        cached = getattr(self, "_food_cache", {}).pop(str(food_id), None)
+        if cached:
+            return cached
+        payload = await self._call(
+            "food.get.v5", food_id=food_id, flag_default_serving=True
+        )
         return payload["food"]
 
     async def autocomplete(self, expression: str) -> list[str]:
         """Подсказки поиска. Спасают, когда LLM дала неточный английский запрос."""
         try:
-            payload = await self._call("foods.autocomplete", expression=expression)
+            payload = await self._call(
+                "foods.autocomplete.v2", expression=expression, max_results=4
+            )
         except FatSecretError:
             return []
         raw = (payload.get("suggestions") or {}).get("suggestion") or []
@@ -155,8 +171,23 @@ class FatSecretClient:
 
     async def food_id_by_barcode(self, barcode: str) -> str | None:
         """GTIN → food_id. Пустой ответ означает «в базе нет», а не ошибку."""
-        payload = await self._call("food.find_id_for_barcode", barcode=barcode)
-        food_id = (payload.get("food_id") or {}).get("value")
+        normalized = fatsecret_gtin13(barcode)
+        if normalized is None:
+            return None
+        try:
+            payload = await self._call(
+                "food.find_id_for_barcode.v2",
+                barcode=normalized,
+                flag_default_serving=True,
+            )
+        except FatSecretError as exc:
+            if exc.code == 211:
+                return None
+            raise
+        food = payload.get("food") or {}
+        food_id = food.get("food_id") or (payload.get("food_id") or {}).get("value")
+        if food_id and food.get("servings"):
+            getattr(self, "_food_cache", {}).update({str(food_id): food})
         return str(food_id) if food_id and str(food_id) != "0" else None
 
     async def create_food(
@@ -170,7 +201,7 @@ class FatSecretClient:
         protein: float,
         fat: float,
         carbs: float,
-        serving_size: str = "100 g",
+        basis_unit: str = "g",
     ) -> str:
         """Создать Свой продукт. Необратимо: парного метода удаления в API нет."""
         payload = await self._call(
@@ -180,9 +211,9 @@ class FatSecretClient:
             food_name=name[:60],
             brand_type="manufacturer",
             brand_name=brand[:60],
-            serving_size=serving_size,
-            metric_serving_amount=100,
-            metric_serving_unit="g",
+            serving_size=f"100 {basis_unit}",
+            serving_amount=100,
+            serving_amount_unit=basis_unit,
             calories=kcal,
             protein=protein,
             fat=fat,
@@ -232,10 +263,9 @@ class FatSecretClient:
         """Сигнал для ранжирования Кандидатов (решение 9). На части тарифов закрыт."""
         try:
             payload = await self._call(
-                "foods.get_recently_eaten",
+                "foods.get_recently_eaten.v2",
                 token=token,
                 token_secret=token_secret,
-                meal="all",
             )
         except FatSecretError:
             return []
