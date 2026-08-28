@@ -24,7 +24,10 @@ API = "https://world.openfoodfacts.org/api/v2/product/{barcode}.json"
 # Open Food Facts просит представляться: без внятного User-Agent запросы режут.
 USER_AGENT = "fsbot/0.1 (https://github.com/mitetenov/fatsecret-tg-bot)"
 
-FIELDS = "product_name,product_name_ru,product_name_en,brands,brands_en,nutriments"
+FIELDS = (
+    "product_name,product_name_ru,product_name_en,brands,brands_en,nutriments,"
+    "nutrition_data_per,product_quantity_unit"
+)
 
 NUTRIENTS = {
     "kcal_100g": "energy-kcal_100g",
@@ -81,11 +84,22 @@ def parse_product(payload: dict) -> dict | None:
             (product.get("brands") or "").split(",")[0],
         ]
     )
+    # OFF исторически называет нормализованное поле `_100g` и для жидкостей; по их
+    # схеме оно означает 100 г *или 100 мл*. Различаем это по единице количества.
+    declared_basis = str(product.get("nutrition_data_per") or "").lower().replace(" ", "")
+    quantity_unit = str(product.get("product_quantity_unit") or "").lower()
+    basis_unit = (
+        "ml"
+        if declared_basis == "100ml" or quantity_unit in {"ml", "cl", "l"}
+        else "g"
+    )
     return {
         "found": True,
         "name": name,
         "brand": brand or "fsbot",
         "source": "openfoodfacts.org",
+        "nutrition_basis": basis_unit,
+        "confidence": 0.9,
         **values,
     }
 

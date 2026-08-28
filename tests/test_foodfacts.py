@@ -29,6 +29,8 @@ def test_real_product_is_parsed():
     assert product["kcal_100g"] == 186
     assert product["carbs_100g"] == 6.7
     assert product["source"] == "openfoodfacts.org"
+    assert product["nutrition_basis"] == "g"
+    assert product["confidence"] == 0.9
 
 
 def test_unknown_barcode():
@@ -74,3 +76,18 @@ def test_impossible_complete_nutrition_is_refused():
         },
     }
     assert parse_product(payload) is None
+
+
+def test_liquid_nutrition_keeps_100ml_basis():
+    payload = {
+        **TUNA_SALAD,
+        "product": {
+            **TUNA_SALAD["product"],
+            "nutrition_data_per": "100g",
+            "product_quantity_unit": "ml",
+        },
+    }
+
+    product = parse_product(payload)
+
+    assert product["nutrition_basis"] == "ml"

@@ -31,3 +31,26 @@ def test_no_create_button_without_nutrition():
 
 def test_draft_without_argument_still_renders_main_buttons():
     assert buttons(ui.draft_keyboard(1)) == ["✅ Записать", "✏️ Изменить", "❌ Отмена"]
+
+
+def test_low_confidence_requires_separate_review_step():
+    d = draft(confidence=0.42)
+    d["confidence"] = 0.42
+    d["needs_review"] = True
+
+    main = ui.draft_keyboard(1, d)
+    confirmation = ui.review_keyboard(1)
+
+    assert buttons(main)[0] == "⚠️ Проверить"
+    assert "Записать всё равно" in buttons(confirmation)[0]
+
+
+def test_confidence_is_visible_in_draft():
+    d = draft(confidence=0.42)
+    d["confidence"] = 0.42
+    d["needs_review"] = True
+
+    rendered = ui.render_draft(d)
+
+    assert "Уверенность распознавания: 42%" in rendered
+    assert "проверь продукт и количество" in rendered

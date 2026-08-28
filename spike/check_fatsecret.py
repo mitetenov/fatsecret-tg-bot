@@ -11,7 +11,7 @@
 Четыре вопроса, от которых зависит состав фич:
 
   1. Работает ли `food.create` v2 — может ли бот сам создавать продукты из этикетки.
-  2. Работает ли `food.find_id_for_barcode` — на Basic scope `barcode` не выдаётся,
+  2. Работает ли `food.find_id_for_barcode.v2` — на Basic scope `barcode` не выдаётся,
      проверяем что будет после одобрения Premier Free.
   3. Доступен ли новый REST дневника (`/profile/diary/entries`) — иначе придётся
      считать `number_of_units` для legacy `food_entry.create`.
@@ -243,14 +243,17 @@ def main() -> None:
         print("\n" + "=" * 72)
         print("Чтение по OAuth 2.0 (нужен IP в IP Restrictions, иначе code 21)")
         print("=" * 72)
-        report("0. Связь: foods.search 'chicken breast'",
-               reader.call(access, "foods.search",
-                           search_expression="chicken breast", max_results=2))
-        report("4. Кириллица: foods.search 'творог'",
-               reader.call(access, "foods.search",
-                           search_expression="творог", max_results=3))
-        report("2. Штрих-код: food.find_id_for_barcode",
-               reader.call(access, "food.find_id_for_barcode", barcode=args.barcode))
+        report("0. Связь: foods.search.v5 'chicken breast'",
+               reader.call(access, "foods.search.v5",
+                           search_expression="chicken breast", max_results=2,
+                           flag_default_serving=True))
+        report("4. Кириллица: foods.search.v5 'творог'",
+               reader.call(access, "foods.search.v5",
+                           search_expression="творог", max_results=3,
+                           flag_default_serving=True))
+        report("2. Штрих-код: food.find_id_for_barcode.v2",
+               reader.call(access, "food.find_id_for_barcode.v2", barcode=args.barcode,
+                           flag_default_serving=True))
 
     consumer_key = env.get("FATSECRET_CONSUMER_KEY")
     consumer_secret = env.get("FATSECRET_CONSUMER_SECRET")
@@ -264,8 +267,9 @@ def main() -> None:
     print("\n" + "=" * 72)
     print("OAuth 1.0 — двуногая проба (заодно видно, действует ли тут IP-whitelist)")
     print("=" * 72)
-    report("foods.search через подпись OAuth 1.0",
-           profile.legacy("foods.search", search_expression="oats", max_results=1))
+    report("foods.search.v5 через подпись OAuth 1.0",
+           profile.legacy("foods.search.v5", search_expression="oats", max_results=1,
+                          flag_default_serving=True))
 
     if args.two_legged_only:
         print("\nДальше нужна привязка аккаунта — запусти без --two-legged-only.")

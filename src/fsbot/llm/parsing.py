@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -38,6 +39,15 @@ RECOGNITION_SCHEMA = {
                         "meal": {"type": "string"},
                         "date_hint": {"type": "string"},
                         "brand": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "nutrition_basis": {
+                            "type": "string",
+                            "enum": ["100g", "100ml"],
+                        },
+                        "kcal_per_100": {"type": "number"},
+                        "protein_per_100": {"type": "number"},
+                        "fat_per_100": {"type": "number"},
+                        "carbs_per_100": {"type": "number"},
                         "kcal_100g": {"type": "number"},
                         "protein_100g": {"type": "number"},
                         "fat_100g": {"type": "number"},
@@ -56,12 +66,13 @@ RECOGNITION_SCHEMA = {
 
 @dataclass(frozen=True, slots=True)
 class Nutrition:
-    """КБЖУ на 100 г с этикетки — из них можно создать Свой продукт."""
+    """КБЖУ на 100 г либо 100 мл с этикетки."""
 
     kcal: float
     protein: float
     fat: float
     carbs: float
+    basis_unit: str = "g"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +85,7 @@ class RecognizedItem:
     date_hint: str | None = None
     brand: str | None = None
     nutrition: Nutrition | None = None
+    confidence: float = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +129,7 @@ def parse_recognition(raw: str) -> Recognition:
     for entry in payload.get("items") or []:
         if not isinstance(entry, dict):
             continue
-        item = _parse_item(entry)
+        item = _parse_item(entry, kind)
         if item:
             items.append(item)
 
@@ -132,7 +144,7 @@ def _parse_barcode(value: object) -> str | None:
     return digits if 8 <= len(digits) <= 14 else None
 
 
-def _parse_item(entry: dict) -> RecognizedItem | None:
+def _parse_item(entry: dict, kind: str = "text") -> RecognizedItem | None:
     query = str(entry.get("query_en") or entry.get("name_ru") or "").strip()
     if not query:
         return None
@@ -171,23 +183,45 @@ def _parse_item(entry: dict) -> RecognizedItem | None:
         date_hint=hint,
         brand=(str(entry.get("brand")).strip() or None) if entry.get("brand") else None,
         nutrition=_parse_nutrition(entry),
+        confidence=_parse_confidence(entry.get("confidence"), kind),
     )
+
+
+def _parse_confidence(value: object, kind: str) -> float:
+    defaults = {"text": 0.8, "label": 0.6, "plate": 0.55}
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return defaults.get(kind, 0.5)
+    if not math.isfinite(parsed):
+        return defaults.get(kind, 0.5)
+    return round(max(0.0, min(1.0, parsed)), 2)
 
 
 def _parse_nutrition(entry: dict) -> Nutrition | None:
     """Создавать продукт можно только по полному набору: частичные КБЖУ хуже, чем их
     отсутствие — они выглядят достоверно, а дневник считают неверно."""
-    values = {}
-    for field_name, key in (
-        ("kcal", "kcal_100g"),
-        ("protein", "protein_100g"),
-        ("fat", "fat_100g"),
-        ("carbs", "carbs_100g"),
-    ):
+    basis = str(entry.get("nutrition_basis") or "100g").lower().replace(" ", "")
+    basis_unit = "ml" if basis in {"100ml", "ml"} else "g"
+    generic = {
+        "kcal": "kcal_per_100",
+        "protein": "protein_per_100",
+        "fat": "fat_per_100",
+        "carbs": "carbs_per_100",
+    }
+    legacy = {
+        "kcal": f"kcal_100{basis_unit}",
+        "protein": f"protein_100{basis_unit}",
+        "fat": f"fat_100{basis_unit}",
+        "carbs": f"carbs_100{basis_unit}",
+    }
+    values: dict[str, float] = {}
+    for field_name in generic:
+        key = generic[field_name] if generic[field_name] in entry else legacy[field_name]
         try:
             values[field_name] = float(entry[key])
         except (KeyError, TypeError, ValueError):
             return None
     if not nutrition_rules.plausible(**values):
         return None
-    return Nutrition(**values)
+    return Nutrition(**values, basis_unit=basis_unit)

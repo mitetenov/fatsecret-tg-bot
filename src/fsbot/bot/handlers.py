@@ -27,6 +27,7 @@ from fsbot.bot.pipeline import (
     create_own_food,
     draft_from_food,
     render_report,
+    refresh_confidence,
     set_amount,
     shift_day,
     write_draft,
@@ -294,6 +295,8 @@ async def _apply_amount(
     и жмёт «Записать» на устаревшем варианте.
     """
     await set_amount(fs, draft["items"][index], amount)
+    draft.pop("review_prompted", None)
+    refresh_confidence(draft)
     await storage.update_draft(draft_id, draft)
 
     text, markup = ui.render_draft(draft), ui.draft_keyboard(draft_id, draft)
@@ -632,7 +635,23 @@ async def callbacks(
         await call.answer()
         return
 
+    if action == ui.REVIEW:
+        draft["review_prompted"] = True
+        await storage.update_draft(draft_id, draft)
+        await call.message.edit_reply_markup(reply_markup=ui.review_keyboard(draft_id))
+        await call.answer(
+            "Проверь продукт, количество и КБЖУ. Повторное нажатие выполнит запись.",
+            show_alert=True,
+        )
+        return
+
     if action == ui.WRITE:
+        if draft.get("needs_review") and not draft.get("review_prompted"):
+            draft["review_prompted"] = True
+            await storage.update_draft(draft_id, draft)
+            await call.message.edit_reply_markup(reply_markup=ui.review_keyboard(draft_id))
+            await call.answer("Нужна дополнительная проверка", show_alert=True)
+            return
         user = await storage.get_user(call.from_user.id)
         if not user or not user.is_linked:
             await call.answer("Сначала /link", show_alert=True)
@@ -654,6 +673,8 @@ async def callbacks(
         return
 
     if action == ui.EDIT:
+        draft.pop("review_prompted", None)
+        await storage.update_draft(draft_id, draft)
         await call.message.edit_text(
             ui.render_draft(draft), reply_markup=ui.edit_keyboard(draft_id, draft)
         )
@@ -666,6 +687,8 @@ async def callbacks(
     elif action == ui.PICK_CANDIDATE:
         index, position = (int(part) for part in arg.split("."))
         await apply_candidate(fs, draft["items"][index], position)
+        draft.pop("review_prompted", None)
+        refresh_confidence(draft)
         await storage.update_draft(draft_id, draft)
         await call.message.edit_text(
             ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
@@ -691,6 +714,8 @@ async def callbacks(
             await storage.bind_barcode(user.user_id, draft["barcode"], food_id)
             log.info("связал штрих-код %s с продуктом %s", draft["barcode"], food_id)
 
+        refresh_confidence(draft)
+        draft.pop("review_prompted", None)
         await storage.update_draft(draft_id, draft)
         await call.message.edit_text(
             ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)

@@ -27,12 +27,21 @@ MACRO_TOLERANCE = 0.40
 MACRO_FLOOR = 1.0
 
 
-def kcal_per_100g(servings: list[Serving]) -> float | None:
+def kcal_per_100(servings: list[Serving], unit: str = "g") -> float | None:
     """Калорийность продукта на 100 г, если её вообще можно вычислить."""
     for serving in servings:
-        if serving.is_metric and serving.metric_amount and serving.calories:
+        if (
+            serving.is_metric
+            and serving.metric_unit == unit
+            and serving.metric_amount
+            and serving.calories
+        ):
             return serving.calories / serving.metric_amount * 100
     return None
+
+
+def kcal_per_100g(servings: list[Serving]) -> float | None:
+    return kcal_per_100(servings, "g")
 
 
 def deviation(label_kcal: float, candidate_kcal: float) -> float:
@@ -42,10 +51,15 @@ def deviation(label_kcal: float, candidate_kcal: float) -> float:
     return abs(candidate_kcal - label_kcal) / label_kcal
 
 
-def per_100g(servings: list[Serving]) -> dict[str, float] | None:
-    """Полный профиль продукта на 100 г, если его вообще можно вычислить."""
+def per_100(servings: list[Serving], unit: str = "g") -> dict[str, float] | None:
+    """Полный профиль продукта на 100 г либо 100 мл."""
     for serving in servings:
-        if serving.is_metric and serving.metric_amount and serving.calories:
+        if (
+            serving.is_metric
+            and serving.metric_unit == unit
+            and serving.metric_amount
+            and serving.calories
+        ):
             scale = 100 / serving.metric_amount
             return {
                 "kcal": serving.calories * scale,
@@ -56,8 +70,14 @@ def per_100g(servings: list[Serving]) -> dict[str, float] | None:
     return None
 
 
+def per_100g(servings: list[Serving]) -> dict[str, float] | None:
+    return per_100(servings, "g")
+
+
 def matches_label(
-    label: dict[str, float] | float, servings: list[Serving]
+    label: dict[str, float] | float,
+    servings: list[Serving],
+    basis_unit: str = "g",
 ) -> tuple[bool, float | None]:
     """Похож ли Кандидат на то, что написано на этикетке.
 
@@ -71,7 +91,7 @@ def matches_label(
     if isinstance(label, (int, float)):
         label = {"kcal": float(label)}
 
-    candidate = per_100g(servings)
+    candidate = per_100(servings, basis_unit)
     if candidate is None:
         return True, None
 

@@ -21,6 +21,7 @@ PICK_MEAL = "m"
 PICK_DATE = "d"
 BACK = "b"
 CREATE_FOOD = "n"
+REVIEW = "r"
 
 
 def cb(draft_id: int, action: str, arg: str | int = "") -> str:
@@ -62,11 +63,13 @@ def render_draft(draft: dict) -> str:
                     if item.get("source")
                     else "с этикетки"
                 )
+                basis = "100 мл" if spec.get("basis_unit") == "ml" else "100 г"
                 lines.append(
                     f"{index}. <b>{name}</b> — {item['amount']:g} {item['unit']}"
                     f" · в базе FatSecret нет, {origin}\n"
                     f"    {scaled['kcal']:g} ккал · Б {scaled['protein']:g} · "
                     f"Ж {scaled['fat']:g} · У {scaled['carbs']:g}\n"
+                    f"    данные с этикетки на {basis}\n"
                     f"    ➕ создай продукт кнопкой ниже, иначе пункт не запишется"
                 )
             else:
@@ -82,20 +85,31 @@ def render_draft(draft: dict) -> str:
             # Молчать тут нельзя: расхождение с этикеткой в разы означает, что нашёлся
             # другой продукт, и записывать его — значит испортить Дневник.
             line += (
-                f"\n    ⚠️ на этикетке {item['label_kcal']:g} ккал/100 г — "
+                f"\n    ⚠️ на этикетке {item['label_kcal']:g} ккал/100 "
+                f"{'мл' if item.get('label_basis_unit') == 'ml' else 'г'} — "
                 f"расхождение {item['mismatch'] * 100:.0f}%, похоже, это другой продукт"
             )
         lines.append(line)
 
     meal = MEAL_RU[Meal(draft["meal"])]
     lines.append(f"\n<b>Итого: {total:g} ккал</b> · {meal} · {draft['day']}")
+    if "confidence" in draft:
+        percent = round(float(draft["confidence"]) * 100)
+        lines.append(f"Уверенность распознавания: {percent}%")
+    if draft.get("needs_review"):
+        lines.append("⚠️ Низкая уверенность: проверь продукт и количество перед записью.")
     return "\n".join(lines)
 
 
 def draft_keyboard(draft_id: int, draft: dict | None = None) -> dict:
+    write = (
+        {"text": "⚠️ Проверить", "callback_data": cb(draft_id, REVIEW)}
+        if (draft or {}).get("needs_review")
+        else {"text": "✅ Записать", "callback_data": cb(draft_id, WRITE)}
+    )
     rows = [
         [
-            {"text": "✅ Записать", "callback_data": cb(draft_id, WRITE)},
+            write,
             {"text": "✏️ Изменить", "callback_data": cb(draft_id, EDIT)},
             {"text": "❌ Отмена", "callback_data": cb(draft_id, CANCEL)},
         ]
@@ -113,6 +127,23 @@ def draft_keyboard(draft_id: int, draft: dict | None = None) -> dict:
                 ]
             )
     return {"inline_keyboard": rows}
+
+
+def review_keyboard(draft_id: int) -> dict:
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "⚠️ Записать всё равно",
+                    "callback_data": cb(draft_id, WRITE),
+                }
+            ],
+            [
+                {"text": "✏️ Изменить", "callback_data": cb(draft_id, EDIT)},
+                {"text": "❌ Отмена", "callback_data": cb(draft_id, CANCEL)},
+            ],
+        ]
+    }
 
 
 def edit_keyboard(draft_id: int, draft: dict) -> dict:

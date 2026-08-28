@@ -133,3 +133,38 @@ def test_trace_amounts_do_not_count_as_mismatch():
     label = {"kcal": 201, "protein": 25.7, "fat": 10.1, "carbs": 0.2}
     ok, _ = matches_label(label, parse_servings(SMOKED_TUNA))
     assert ok
+
+
+def test_label_per_100ml_uses_ml_serving_not_gram_serving():
+    liquid = {
+        "servings": {
+            "serving": [
+                {
+                    "serving_id": "g",
+                    "metric_serving_amount": "100",
+                    "metric_serving_unit": "g",
+                    "number_of_units": "100",
+                    "calories": "90",
+                    "protein": "3",
+                    "fat": "3",
+                    "carbohydrate": "5",
+                },
+                {
+                    "serving_id": "ml",
+                    "metric_serving_amount": "100",
+                    "metric_serving_unit": "ml",
+                    "number_of_units": "100",
+                    "calories": "60",
+                    "protein": "3",
+                    "fat": "3.2",
+                    "carbohydrate": "4.7",
+                },
+            ]
+        }
+    }
+    label = {"kcal": 60, "protein": 3, "fat": 3.2, "carbs": 4.7}
+
+    ok, gap = matches_label(label, parse_servings(liquid), basis_unit="ml")
+
+    assert ok
+    assert gap < 0.01

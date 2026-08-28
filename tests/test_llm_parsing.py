@@ -97,3 +97,39 @@ def test_implausible_barcode_is_dropped():
     raw = """{"kind":"label","barcode":"12","items":[
       {"query_en":"x","name_ru":"Икс","amount":100,"unit":"g"}]}"""
     assert parse_recognition(raw).barcode is None
+
+
+def test_confidence_is_clamped_and_defaults_by_recognition_kind():
+    explicit = parse_recognition(
+        '{"kind":"plate","items":[{"query_en":"soup","name_ru":"суп",'
+        '"amount":300,"unit":"g","confidence":1.7}]}'
+    )
+    default = parse_recognition(
+        '{"kind":"plate","items":[{"query_en":"soup","name_ru":"суп",'
+        '"amount":300,"unit":"g"}]}'
+    )
+
+    assert explicit.items[0].confidence == 1.0
+    assert default.items[0].confidence == 0.55
+
+
+def test_nutrition_per_100ml_keeps_its_basis():
+    raw = """{"kind":"label","items":[{"query_en":"milk","name_ru":"Молоко",
+      "amount":450,"unit":"ml","nutrition_basis":"100ml","kcal_per_100":60,
+      "protein_per_100":3,"fat_per_100":3.2,"carbs_per_100":4.7}]}"""
+
+    nutrition = parse_recognition(raw).items[0].nutrition
+
+    assert nutrition is not None
+    assert nutrition.basis_unit == "ml"
+    assert nutrition.kcal == 60
+
+
+def test_legacy_nutrition_fields_remain_per_100g():
+    result = parse_recognition(
+        '{"kind":"label","items":[{"query_en":"x","name_ru":"X",'
+        '"amount":100,"unit":"g","kcal_100g":100,"protein_100g":5,'
+        '"fat_100g":4,"carbs_100g":12}]}'
+    )
+
+    assert result.items[0].nutrition.basis_unit == "g"

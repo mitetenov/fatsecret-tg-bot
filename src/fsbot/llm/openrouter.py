@@ -7,6 +7,7 @@ import logging
 
 import httpx
 
+from fsbot.domain import nutrition as nutrition_rules
 from fsbot.llm.parsing import (
     RECOGNITION_SCHEMA,
     ParseError,
@@ -26,7 +27,8 @@ TEXT_PROMPT = """Ты разбираешь короткие реплики о с
 amount (число), unit ("g", "ml" или "piece"), meal (breakfast/lunch/dinner/other,
 только если человек назвал приём пищи явно), date_hint ("yesterday", только если
 человек сказал «вчера»).
-Если количество не названо — оцени типичную порцию и всё равно укажи число.
+confidence — число 0..1: насколько уверенно определены продукт и количество.
+Если количество не названо — оцени типичную порцию и снизь confidence.
 Штучные продукты переводи в граммы, если знаешь типичный вес: «2 яйца» → 110 g.
 Для славянских продуктов, у которых нет точного английского аналога, давай
 транслитерацию: «творог» → "tvorog", «кефир» → "kefir", «ряженка» → "ryazhenka".
@@ -41,6 +43,7 @@ PLATE_PROMPT = """На фото еда или напиток. Определи �
 Верни JSON: {"kind":"plate","items":[...]}, где на каждое блюдо — объект с полями
 query_en (короткий английский поисковый запрос для базы продуктов США), name_ru
 (название по-русски), amount (граммы, число), unit ("g").
+confidence — число 0..1; снижай его при неоднозначном блюде или приблизительном весе.
 Оценивай вес по видимому объёму; лучше приблизительно, чем пропустить блюдо.
 Отвечай только JSON, без пояснений."""
 
@@ -54,9 +57,10 @@ name_ru — название по-русски или по-английски. �
 строка рядом с местной («TUNA SALAD WITH BEANS» под грузинским текстом) — бери её.
 Если её нет, переведи название на русский. Не оставляй название грузинским, греческим
 или армянским: оно попадёт в дневник питания навсегда и станет нечитаемым.
-brand (бренд как на упаковке, латиницей),
+brand (бренд как на упаковке, латиницей), confidence — число 0..1,
 unit ("g" для веса, "ml" для объёма),
-kcal_100g, protein_100g, fat_100g, carbs_100g — числа из таблицы в пересчёте на 100 г.
+nutrition_basis — "100g" или "100ml" ровно как на этикетке;
+kcal_per_100, protein_per_100, fat_per_100, carbs_per_100 — числа на эту базу.
 Если таблица дана на порцию, а не на 100 г, пересчитай сам.
 Указывай КБЖУ только если уверенно прочитал все четыре числа: неполные данные хуже
 отсутствующих, по ним будет создан неверный продукт.
@@ -88,7 +92,9 @@ BARCODE_PROMPT = """Найди товар со штрих-кодом {barcode}.
 Название дай по-русски или по-английски — оно попадёт в дневник питания навсегда;
 не оставляй его на языке сайта-источника.
 Верни только JSON: {{"found": true/false, "name": "название", "brand": "бренд",
-"kcal_100g": число, "protein_100g": число, "fat_100g": число, "carbs_100g": число,
+"nutrition_basis": "100g" или "100ml", "kcal_per_100": число,
+"protein_per_100": число, "fat_per_100": число, "carbs_per_100": число,
+"confidence": число 0..1,
 "source": "домен, откуда взяты данные"}}
 Если данных нет — {{"found": false}}. Не выдумывай числа: без источника ставь false."""
 
@@ -201,8 +207,15 @@ class OpenRouter:
 
         if not data.get("found"):
             return None
-        log.info("код %s опознан в вебе: %s (%s)", barcode, data.get("name"), data.get("source"))
-        return data
+        product = _normalize_lookup_product(data)
+        if product:
+            log.info(
+                "код %s опознан в вебе: %s (%s)",
+                barcode,
+                product.get("name"),
+                product.get("source"),
+            )
+        return product
 
     async def translate_product(self, name: str, brand: str) -> tuple[str, str] | None:
         """Перевести название и бренд в читаемый вид.
@@ -309,3 +322,38 @@ class OpenRouter:
                 log.warning("модель %s не прошла repair, пробую следующую", model)
 
         raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
+
+
+def _normalize_lookup_product(data: dict) -> dict | None:
+    name = str(data.get("name") or "").strip()
+    source = str(data.get("source") or "").strip()
+    if not name or not source:
+        return None
+    basis = str(data.get("nutrition_basis") or "100g").lower().replace(" ", "")
+    basis_unit = "ml" if basis in {"100ml", "ml"} else "g"
+    values: dict[str, float] = {}
+    for field in ("kcal", "protein", "fat", "carbs"):
+        raw = data.get(f"{field}_per_100")
+        if raw is None:
+            raw = data.get(f"{field}_100{basis_unit}")
+        try:
+            values[field] = float(raw)
+        except (TypeError, ValueError):
+            return None
+    if not nutrition_rules.plausible(**values):
+        return None
+    try:
+        confidence = float(data.get("confidence", 0.6))
+    except (TypeError, ValueError):
+        confidence = 0.6
+    return {
+        **data,
+        "name": name,
+        "source": source,
+        "nutrition_basis": basis_unit,
+        "confidence": round(max(0.0, min(0.75, confidence)), 2),
+        "kcal_per_100": values["kcal"],
+        "protein_per_100": values["protein"],
+        "fat_per_100": values["fat"],
+        "carbs_per_100": values["carbs"],
+    }

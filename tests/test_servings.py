@@ -215,3 +215,33 @@ def test_exact_unit_still_wins_over_swap():
     }
     portion = default_portion(parse_servings(with_ml), 450, "ml")
     assert portion.serving.serving_id == "3"
+
+
+def test_derived_v5_serving_cannot_be_used_for_diary_entry():
+    food = {
+        "servings": {
+            "serving": [
+                {
+                    "serving_id": "0",
+                    "serving_description": "100 ml",
+                    "metric_serving_amount": "100",
+                    "metric_serving_unit": "ml",
+                    "number_of_units": "100",
+                    "calories": "60",
+                },
+                {
+                    "serving_id": "123",
+                    "serving_description": "1 bottle",
+                    "metric_serving_amount": "450",
+                    "metric_serving_unit": "ml",
+                    "number_of_units": "1",
+                    "calories": "270",
+                },
+            ]
+        }
+    }
+
+    portion = default_portion(parse_servings(food), 225, "ml")
+
+    assert portion.serving.serving_id == "123"
+    assert portion.api_units == 0.5

@@ -20,6 +20,7 @@ from fsbot.llm.parsing import Recognition, RecognizedItem
 log = logging.getLogger(__name__)
 
 MAX_CANDIDATES = 5
+REVIEW_THRESHOLD = 0.65
 
 
 @dataclass(slots=True)
@@ -41,13 +42,15 @@ async def build_draft(
     day, meal = resolve(tz, meal_hint=first.meal, date_hint=first.date_hint)
 
     items = [await _resolve_item(fs, item, recent or []) for item in recognition.items]
-    return {
+    draft = {
         "day": day.isoformat(),
         "meal": meal.value,
         "items": items,
         "kind": recognition.kind,
         "barcode": barcode or recognition.barcode,
     }
+    refresh_confidence(draft)
+    return draft
 
 
 async def draft_from_food(
@@ -66,18 +69,23 @@ async def draft_from_food(
         "status": "pending",
         "entry_id": None,
         "error": None,
-        "candidates": [{"food_id": food_id, "title": title, "description": ""}],
+        "candidates": [
+            {"food_id": food_id, "title": title, "description": "", "food": food}
+        ],
         "chosen": 0,
         "food_id": None,
+        "confidence": 1.0,
     }
     await apply_candidate(fs, item, chosen=0)
-    return {
+    draft = {
         "day": day.isoformat(),
         "meal": meal.value,
         "items": [item],
         "kind": "barcode",
         "barcode": None,
     }
+    refresh_confidence(draft)
+    return draft
 
 
 def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
@@ -88,11 +96,12 @@ def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
     """
     day, meal = resolve(tz)
     name = product.get("name") or "Продукт"
+    basis_unit = "ml" if product.get("nutrition_basis") == "ml" else "g"
     item = {
         "name_ru": name,
         "query": name,
         "amount": 100,
-        "unit": "g",
+        "unit": basis_unit,
         "status": "pending",
         "entry_id": None,
         "error": None,
@@ -102,20 +111,29 @@ def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
         "creatable": {
             "name": name,
             "brand": product.get("brand") or "fsbot",
-            "kcal": product.get("kcal_100g"),
-            "protein": product.get("protein_100g"),
-            "fat": product.get("fat_100g"),
-            "carbs": product.get("carbs_100g"),
+            "kcal": _product_nutrient(product, "kcal", basis_unit),
+            "protein": _product_nutrient(product, "protein", basis_unit),
+            "fat": _product_nutrient(product, "fat", basis_unit),
+            "carbs": _product_nutrient(product, "carbs", basis_unit),
+            "basis_unit": basis_unit,
         },
         "source": product.get("source"),
+        "confidence": float(product.get("confidence", 0.6)),
     }
-    return {
+    draft = {
         "day": day.isoformat(),
         "meal": meal.value,
         "items": [item],
         "kind": "web",
         "barcode": barcode,
     }
+    refresh_confidence(draft)
+    return draft
+
+
+def _product_nutrient(product: dict, name: str, basis_unit: str) -> object:
+    generic = product.get(f"{name}_per_100")
+    return generic if generic is not None else product.get(f"{name}_100{basis_unit}")
 
 
 async def _resolve_item(
@@ -132,6 +150,7 @@ async def _resolve_item(
         "candidates": [],
         "chosen": 0,
         "food_id": None,
+        "confidence": item.confidence,
     }
 
     try:
@@ -159,12 +178,19 @@ async def _resolve_item(
                 "protein": item.nutrition.protein,
                 "fat": item.nutrition.fat,
                 "carbs": item.nutrition.carbs,
+                "basis_unit": item.nutrition.basis_unit,
             }
         return base
 
     ranked = _rank(found, recent)
     base["candidates"] = [
-        {"food_id": c.food_id, "title": c.title, "description": c.description} for c in ranked
+        {
+            "food_id": c.food_id,
+            "title": c.title,
+            "description": c.description,
+            "food": c.details,
+        }
+        for c in ranked
     ]
     if item.nutrition:
         # С этикетки известна калорийность — выбираем Кандидата, который в неё
@@ -177,6 +203,7 @@ async def _resolve_item(
             "fat": item.nutrition.fat,
             "carbs": item.nutrition.carbs,
         }
+        base["label_basis_unit"] = item.nutrition.basis_unit
         base["creatable"] = {
             "name": item.name_ru,
             "brand": item.brand or "fsbot",
@@ -184,6 +211,7 @@ async def _resolve_item(
             "protein": item.nutrition.protein,
             "fat": item.nutrition.fat,
             "carbs": item.nutrition.carbs,
+            "basis_unit": item.nutrition.basis_unit,
         }
     await pick_best_candidate(fs, base)
     return base
@@ -205,7 +233,7 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
     candidate = candidates[chosen]
 
     try:
-        food = await fs.get_food(candidate["food_id"])
+        food = candidate.get("food") or await fs.get_food(candidate["food_id"])
     except FatSecretError as exc:
         item["error"] = exc.message
         return
@@ -219,7 +247,9 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
     mismatch = None
     if item.get("label_kcal"):
         ok, gap = matching.matches_label(
-            item.get("label_macros") or item["label_kcal"], portions
+            item.get("label_macros") or item["label_kcal"],
+            portions,
+            basis_unit=item.get("label_basis_unit", "g"),
         )
         if not ok:
             mismatch = gap
@@ -239,6 +269,10 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
         error=None,
         mismatch=mismatch,
     )
+    if mismatch is not None:
+        item["confidence"] = min(float(item.get("confidence", 0.5)), 0.35)
+    elif item.get("label_kcal"):
+        item["confidence"] = max(float(item.get("confidence", 0.5)), 0.85)
 
 
 async def pick_best_candidate(fs: FatSecretClient, item: dict) -> None:
@@ -276,6 +310,7 @@ async def create_own_food(
         protein=spec["protein"],
         fat=spec["fat"],
         carbs=spec["carbs"],
+        basis_unit=spec.get("basis_unit", "g"),
     )
     item["candidates"] = [{"food_id": food_id, "title": spec["name"], "description": "свой"}]
     item.pop("creatable", None)
@@ -302,6 +337,23 @@ def shift_day(
     today, _ = resolve(tz, now_utc)
     target = today if hint == "today" else today - timedelta(days=1)
     draft["day"] = target.isoformat()
+
+
+def refresh_confidence(draft: dict) -> None:
+    """Сводная уверенность черновика и необходимость дополнительной проверки."""
+    scores = [
+        max(0.0, min(1.0, float(item.get("confidence", 0.5))))
+        for item in draft.get("items", [])
+    ]
+    if not scores:
+        draft.pop("confidence", None)
+        draft.pop("needs_review", None)
+        return
+    score = round(min(scores), 2)
+    draft["confidence"] = score
+    draft["needs_review"] = score < REVIEW_THRESHOLD or any(
+        bool(item.get("mismatch")) for item in draft.get("items", [])
+    )
 
 
 async def write_draft(
