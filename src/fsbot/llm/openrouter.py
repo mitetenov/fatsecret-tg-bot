@@ -122,39 +122,55 @@ class OpenRouter:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def _complete_one(
+        self, model: str, messages: list[dict], schema: bool
+    ) -> str:
+        """Один запрос к конкретной модели с проверкой envelope OpenRouter."""
+        body: dict = {"model": model, "messages": messages}
+        if schema:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": RECOGNITION_SCHEMA,
+            }
+            body["provider"] = {"require_parameters": True}
+        try:
+            response = await self._client.post(ENDPOINT, headers=self._headers, json=body)
+        except httpx.HTTPError as exc:
+            raise LLMError(f"{model}: {exc}", [0]) from exc
+
+        if response.status_code != 200:
+            raise LLMError(
+                f"{model}: HTTP {response.status_code} {response.text[:160]}",
+                [response.status_code],
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise LLMError(f"{model}: ответ OpenRouter не JSON", [0]) from exc
+        if not isinstance(payload, dict):
+            raise LLMError(f"{model}: неожиданный ответ OpenRouter", [0])
+
+        choices = payload.get("choices") or []
+        if not isinstance(choices, list) or not choices:
+            raise LLMError(f"{model}: пустой ответ {payload.get('error')}", [0])
+        first = choices[0]
+        message = first.get("message") if isinstance(first, dict) else None
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, str):
+            raise LLMError(f"{model}: ответ не содержит текст", [0])
+        return content
+
     async def _complete(self, models: list[str], messages: list[dict], schema: bool) -> str:
         """Пробуем модели по списку: бесплатные то заняты, то не умеют json_schema."""
         errors: list[str] = []
         statuses: list[int] = []
         for model in models:
-            body: dict = {"model": model, "messages": messages}
-            if schema:
-                body["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": RECOGNITION_SCHEMA,
-                }
             try:
-                response = await self._client.post(
-                    ENDPOINT, headers=self._headers, json=body
-                )
-            except httpx.HTTPError as exc:
-                errors.append(f"{model}: {exc}")
-                statuses.append(0)
-                continue
-
-            if response.status_code != 200:
-                errors.append(f"{model}: HTTP {response.status_code} {response.text[:160]}")
-                statuses.append(response.status_code)
-                continue
-
-            payload = response.json()
-            choices = payload.get("choices") or []
-            if not choices:
-                errors.append(f"{model}: пустой ответ {payload.get('error')}")
-                statuses.append(0)
-                continue
-            return choices[0]["message"]["content"] or ""
-
+                return await self._complete_one(model, messages, schema)
+            except LLMError as exc:
+                errors.append(str(exc))
+                statuses.extend(exc.statuses)
         raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
 
     async def lookup_barcode(self, barcode: str) -> dict | None:
@@ -269,18 +285,27 @@ class OpenRouter:
         return "label" if "label" in answer.lower() else "plate"
 
     async def _recognize(self, models: list[str], messages: list[dict]) -> Recognition:
-        raw = await self._complete(models, messages, schema=True)
-        try:
-            return parse_recognition(raw)
-        except ParseError as first:
-            log.warning("ответ модели не разобран (%s), повторяю без схемы", first)
+        errors: list[str] = []
+        statuses: list[int] = []
+        for model in models:
+            try:
+                raw = await self._complete_one(model, messages, schema=True)
+                return parse_recognition(raw)
+            except (LLMError, ParseError) as first:
+                log.warning("ответ модели %s не разобран (%s), повторяю без схемы", model, first)
+                errors.append(f"{model}: {first}")
+                statuses.extend(first.statuses if isinstance(first, LLMError) else [0])
 
-        retry = [*messages, {"role": "user", "content": "Верни только валидный JSON."}]
-        raw = await self._complete(models, retry, schema=False)
-        # Разбор повтора тоже может не удаться — например, если человек прислал голое
-        # число или модель ничего не распознала. Это нормальный исход, а не авария:
-        # наружу уходит LLMError, который хендлеры умеют превращать в понятный ответ.
-        try:
-            return parse_recognition(raw)
-        except ParseError as second:
-            raise LLMError(f"разбор не удался дважды: {second}") from second
+            retry = [
+                *messages,
+                {"role": "user", "content": "Верни только валидный JSON."},
+            ]
+            try:
+                raw = await self._complete_one(model, retry, schema=False)
+                return parse_recognition(raw)
+            except (LLMError, ParseError) as second:
+                errors.append(f"{model} repair: {second}")
+                statuses.extend(second.statuses if isinstance(second, LLMError) else [0])
+                log.warning("модель %s не прошла repair, пробую следующую", model)
+
+        raise LLMError("; ".join(errors) or "нет доступных моделей", statuses)
