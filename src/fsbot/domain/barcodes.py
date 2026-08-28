@@ -56,15 +56,21 @@ def expand_upce(value: str) -> str | None:
     return upca if valid_gtin(upca) else None
 
 
-def fatsecret_gtin13(value: str, symbology: str | None = None) -> str | None:
-    """GTIN-13 для FatSecret или None, если код неверен/не поддерживается API."""
+def canonical_gtin(value: str, symbology: str | None = None) -> str | None:
+    """Валидный GTIN; UPC-E канонизируется в UPC-A."""
     digits = "".join(ch for ch in value if ch.isdigit())
     if (symbology or "").upper() == "UPCE":
         digits = expand_upce(digits) or ""
     elif len(digits) == 8 and not valid_gtin(digits):
         # При ручном вводе символика неизвестна: EAN-8 проверяем первым, UPC-E вторым.
         digits = expand_upce(digits) or digits
-    if not valid_gtin(digits) or len(digits) == 14:
+    return digits if valid_gtin(digits) else None
+
+
+def fatsecret_gtin13(value: str, symbology: str | None = None) -> str | None:
+    """GTIN-13 для FatSecret или None, если код неверен/не поддерживается API."""
+    digits = canonical_gtin(value, symbology)
+    if digits is None or len(digits) == 14:
         return None
     return digits.zfill(13)
 
@@ -77,13 +83,11 @@ def plausible(candidates: list[tuple[str, str]]) -> str | None:
     """
     best: str | None = None
     for value, symbology in candidates:
-        digits = "".join(ch for ch in value if ch.isdigit())
         kind = symbology.upper()
         if kind in NON_FOOD_SYMBOLOGIES:
             continue
-        if kind == "UPCE":
-            digits = expand_upce(digits) or ""
-        if not valid_gtin(digits):
+        digits = canonical_gtin(value, kind)
+        if digits is None:
             continue
         if kind in PRODUCT_SYMBOLOGIES:
             return digits

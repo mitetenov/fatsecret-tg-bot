@@ -335,6 +335,10 @@ async def _lookup_product(code: str, off: OpenFoodFacts, llm: OpenRouter) -> dic
     Open Food Facts отвечает одинаково на каждый запрос и бесплатно; веб-поиск моделью
     на том же коде срабатывал в двух прогонах из пяти, поэтому он резерв, а не основа.
     """
+    code = barcodes.canonical_gtin(code)
+    if code is None:
+        log.info("штрих-код не прошёл проверку контрольной цифры")
+        return None
     product = await off.lookup(code) or await llm.lookup_barcode(code)
     if not product:
         return None
