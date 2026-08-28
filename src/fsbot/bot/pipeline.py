@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fsbot.domain import matching, servings as srv
 from fsbot.domain.daybounds import Meal, resolve
@@ -291,12 +291,17 @@ async def set_amount(fs: FatSecretClient, item: dict, amount: float) -> None:
     await apply_candidate(fs, item, item.get("chosen", 0))
 
 
-def shift_day(draft: dict, hint: str) -> None:
-    day = date.fromisoformat(draft["day"])
-    today = date.today()
-    draft["day"] = (today if hint == "today" else today - timedelta(days=1)).isoformat()
+def shift_day(
+    draft: dict,
+    hint: str,
+    tz: str,
+    now_utc: datetime | None = None,
+) -> None:
     if hint not in {"today", "yesterday"}:
-        draft["day"] = day.isoformat()
+        return
+    today, _ = resolve(tz, now_utc)
+    target = today if hint == "today" else today - timedelta(days=1)
+    draft["day"] = target.isoformat()
 
 
 async def write_draft(

@@ -608,7 +608,11 @@ async def on_error(event: ErrorEvent) -> bool:
 
 @router.callback_query()
 async def callbacks(
-    call: CallbackQuery, state: FSMContext, storage: Storage, fs: FatSecretClient
+    call: CallbackQuery,
+    state: FSMContext,
+    storage: Storage,
+    fs: FatSecretClient,
+    cfg: Config,
 ) -> None:
     draft_id, action, arg = ui.parse_cb(call.data or "")
     log.info("кнопка %r arg=%r черновик=%s", action, arg, draft_id)
@@ -707,7 +711,9 @@ async def callbacks(
         if not arg:
             await call.message.edit_reply_markup(reply_markup=ui.date_keyboard(draft_id))
         else:
-            shift_day(draft, arg)
+            user = await storage.get_user(call.from_user.id)
+            tz = user.tz if user and user.tz else cfg.default_tz
+            shift_day(draft, arg, tz)
             await storage.update_draft(draft_id, draft)
             await call.message.edit_text(
                 ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
