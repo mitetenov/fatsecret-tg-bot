@@ -12,6 +12,7 @@ from datetime import date
 
 import httpx
 
+from fsbot.domain.barcodes import fatsecret_gtin13
 from fsbot.domain.daybounds import Meal, to_fatsecret_date
 from fsbot.fatsecret.oauth1 import signed_params
 
@@ -155,7 +156,10 @@ class FatSecretClient:
 
     async def food_id_by_barcode(self, barcode: str) -> str | None:
         """GTIN → food_id. Пустой ответ означает «в базе нет», а не ошибку."""
-        payload = await self._call("food.find_id_for_barcode", barcode=barcode)
+        normalized = fatsecret_gtin13(barcode)
+        if normalized is None:
+            return None
+        payload = await self._call("food.find_id_for_barcode", barcode=normalized)
         food_id = (payload.get("food_id") or {}).get("value")
         return str(food_id) if food_id and str(food_id) != "0" else None
 
