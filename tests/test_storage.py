@@ -45,14 +45,14 @@ def test_draft_roundtrip_keeps_confidence_and_100ml_basis(tmp_path):
                 "items": [{"nutrition_basis": "ml", "amount": 450}],
             }
             draft_id = await storage.save_draft(42, first)
-            assert await storage.get_draft(draft_id) == first
+            assert await storage.get_draft(draft_id, 42) == first
 
             updated = {**first, "review_prompted": True}
-            await storage.update_draft(draft_id, updated)
+            await storage.update_draft(draft_id, updated, 42)
             assert await storage.last_draft(42) == (draft_id, updated)
 
-            await storage.delete_draft(draft_id)
-            assert await storage.get_draft(draft_id) is None
+            await storage.delete_draft(draft_id, 42)
+            assert await storage.get_draft(draft_id, 42) is None
         finally:
             await storage.close()
 

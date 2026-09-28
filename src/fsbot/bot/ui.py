@@ -22,6 +22,7 @@ PICK_DATE = "d"
 BACK = "b"
 CREATE_FOOD = "n"
 REVIEW = "r"
+PICK_SERVING = "s"
 
 
 def cb(draft_id: int, action: str, arg: str | int = "") -> str:
@@ -50,6 +51,24 @@ def render_draft(draft: dict) -> str:
     lines: list[str] = []
     total = 0.0
     for index, item in enumerate(draft["items"], start=1):
+        if item.get("status") == "undone":
+            lines.append(
+                f"{index}. <b>{escape(str(item['name_ru']))}</b> — ↩️ удалено из дневника"
+            )
+            continue
+        if item.get("status") in {"writing", "unknown", "creating", "create_unknown"}:
+            lines.append(
+                f"{index}. <b>{escape(str(item['name_ru']))}</b> — "
+                "⚠️ исход предыдущего запроса неизвестен; проверь FatSecret"
+            )
+            continue
+        if item.get("needs_portion"):
+            lines.append(
+                f"{index}. <b>{escape(str(item.get('title') or item['name_ru']))}</b> — "
+                f"{item['amount']:g} {item['unit']}\n"
+                "    ⚖️ У продукта нет веса порции. Выбери порцию и укажи количество."
+            )
+            continue
         if not item.get("food_id"):
             name = escape(str(item["name_ru"]))
             spec = item.get("creatable")
@@ -73,11 +92,13 @@ def render_draft(draft: dict) -> str:
                     f"    ➕ создай продукт кнопкой ниже, иначе пункт не запишется"
                 )
             else:
-                lines.append(f"{index}. <b>{name}</b> — не нашёл в базе FatSecret")
+                reason = escape(str(item.get("error") or "не нашёл в базе FatSecret"))
+                lines.append(f"{index}. <b>{name}</b> — {reason}")
             continue
         total += item["kcal"]
+        prefix = "✅ уже записано · " if item.get("status") == "written" else ""
         line = (
-            f"{index}. <b>{escape(str(item['title']))}</b> — {escape(str(item['portion']))}\n"
+            f"{index}. {prefix}<b>{escape(str(item['title']))}</b> — {escape(str(item['portion']))}\n"
             f"    {item['kcal']:g} ккал · Б {item['protein']:g} · "
             f"Ж {item['fat']:g} · У {item['carbohydrate']:g}"
         )
@@ -117,7 +138,8 @@ def draft_keyboard(draft_id: int, draft: dict | None = None) -> dict:
     # Создание Свого продукта необратимо (в API нет удаления), поэтому только явной
     # кнопкой и только там, где с этикетки есть полные КБЖУ.
     for index, item in enumerate((draft or {}).get("items", [])):
-        if item.get("creatable"):
+        if (item.get("creatable") and item.get("status", "pending") == "pending"
+                and (not item.get("food_id") or item.get("mismatch"))):
             rows.append(
                 [
                     {
@@ -125,6 +147,11 @@ def draft_keyboard(draft_id: int, draft: dict | None = None) -> dict:
                         "callback_data": cb(draft_id, CREATE_FOOD, index),
                     }
                 ]
+            )
+        if item.get("needs_portion"):
+            rows.append(
+                [{"text": f"⚖️ Выбрать порцию для {index + 1}",
+                  "callback_data": cb(draft_id, PICK_ITEM, index)}]
             )
     return {"inline_keyboard": rows}
 
@@ -168,6 +195,12 @@ def edit_keyboard(draft_id: int, draft: dict) -> dict:
 
 def item_keyboard(draft_id: int, index: int, item: dict) -> dict:
     rows = []
+    for serving in item.get("available_servings") or []:
+        rows.append(
+            [{"text": f"⚖️ {serving['description'][:35]}",
+              "callback_data": cb(draft_id, PICK_SERVING,
+                                  f"{index}.{serving['serving_id']}")}]
+        )
     for position, candidate in enumerate(item.get("candidates", [])[:5]):
         mark = "• " if position == item.get("chosen") else ""
         rows.append(

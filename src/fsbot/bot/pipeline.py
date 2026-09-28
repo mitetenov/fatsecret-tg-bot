@@ -9,12 +9,20 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from html import escape
 
 from fsbot.domain import matching, servings as srv
 from fsbot.domain.daybounds import Meal, resolve
-from fsbot.fatsecret.client import FatSecretClient, FatSecretError, FoodSummary
+from fsbot.domain.nutrition import validated_nutrition
+from fsbot.fatsecret.client import (
+    FatSecretClient,
+    FatSecretError,
+    FatSecretUnknownOutcome,
+    FoodSummary,
+)
 from fsbot.llm.parsing import Recognition, RecognizedItem
 
 log = logging.getLogger(__name__)
@@ -38,8 +46,11 @@ async def build_draft(
     recent: list[FoodSummary] | None = None,
     barcode: str | None = None,
 ) -> dict:
-    first = recognition.items[0]
-    day, meal = resolve(tz, meal_hint=first.meal, date_hint=first.date_hint)
+    # Вся реплика — один приём пищи. Модель может поставить подсказку только на
+    # второй продукт, поэтому берём первое явно указанное значение из реплики.
+    meal_hint = next((item.meal for item in recognition.items if item.meal), None)
+    date_hint = next((item.date_hint for item in recognition.items if item.date_hint), None)
+    day, meal = resolve(tz, meal_hint=meal_hint, date_hint=date_hint)
 
     items = [await _resolve_item(fs, item, recent or []) for item in recognition.items]
     draft = {
@@ -88,15 +99,23 @@ async def draft_from_food(
     return draft
 
 
-def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
+async def draft_from_web(
+    fs: FatSecretClient, product: dict, tz: str, barcode: str
+) -> dict:
     """Товар опознан по штрих-коду в вебе, но его нет в базе FatSecret.
 
-    Искать его там же по названию бессмысленно — если бы он там был, нашёлся бы по
-    коду. Поэтому сразу предлагаем создать Свой продукт из найденных данных.
+    Barcode indexes may be incomplete. Search by name before offering a new
+    private food, and compare the result against the label nutrients.
     """
     day, meal = resolve(tz)
+    basis_unit = "ml" if product.get("nutrition_basis") in {"ml", "100ml"} else "g"
+    checked = validated_nutrition(
+        {
+            key: _product_nutrient(product, key, basis_unit)
+            for key in ("kcal", "protein", "fat", "carbs")
+        }
+    )
     name = product.get("name") or "Продукт"
-    basis_unit = "ml" if product.get("nutrition_basis") == "ml" else "g"
     item = {
         "name_ru": name,
         "query": name,
@@ -111,12 +130,9 @@ def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
         "creatable": {
             "name": name,
             "brand": product.get("brand") or "fsbot",
-            "kcal": _product_nutrient(product, "kcal", basis_unit),
-            "protein": _product_nutrient(product, "protein", basis_unit),
-            "fat": _product_nutrient(product, "fat", basis_unit),
-            "carbs": _product_nutrient(product, "carbs", basis_unit),
+            **checked,
             "basis_unit": basis_unit,
-        },
+        } if checked else None,
         "source": product.get("source"),
         "confidence": float(product.get("confidence", 0.6)),
     }
@@ -127,6 +143,26 @@ def draft_from_web(product: dict, tz: str, barcode: str) -> dict:
         "kind": "web",
         "barcode": barcode,
     }
+    if checked:
+        terms = [" ".join(filter(None, (product.get("brand"), name))), name]
+        found: list[FoodSummary] = []
+        for term in dict.fromkeys(terms):
+            try:
+                found = await fs.search_foods(term, max_results=MAX_CANDIDATES)
+            except FatSecretError:
+                break
+            if found:
+                break
+        if found:
+            item["candidates"] = [
+                {"food_id": food.food_id, "title": food.title,
+                 "description": food.description, "food": food.details}
+                for food in found
+            ]
+            item["label_kcal"] = checked["kcal"]
+            item["label_macros"] = checked
+            item["label_basis_unit"] = basis_unit
+            await pick_best_candidate(fs, item)
     refresh_confidence(draft)
     return draft
 
@@ -235,13 +271,31 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
     try:
         food = candidate.get("food") or await fs.get_food(candidate["food_id"])
     except FatSecretError as exc:
+        item["food_id"] = None
         item["error"] = exc.message
         return
 
     portions = srv.parse_servings(food)
-    portion = srv.default_portion(portions, item["amount"], item["unit"])
+    manual_id = item.get("manual_serving_id")
+    portion = (
+        srv.by_units(portions, manual_id, item["amount"])
+        if manual_id
+        else srv.default_portion(portions, item["amount"], item["unit"])
+    )
     if portion is None:
-        item["error"] = "у продукта нет ни одной порции"
+        item.update(
+            chosen=chosen,
+            title=candidate["title"],
+            food_id=candidate["food_id"] if portions else None,
+            serving_id=None,
+            units=None,
+            needs_portion=bool(portions),
+            available_servings=[
+                {"serving_id": p.serving_id, "description": p.description}
+                for p in portions[:15]
+            ],
+            error="выбери порцию и её количество" if portions else "у продукта нет ни одной порции",
+        )
         return
 
     mismatch = None
@@ -268,11 +322,24 @@ async def apply_candidate(fs: FatSecretClient, item: dict, chosen: int) -> None:
         carbohydrate=portion.nutrient("carbohydrate"),
         error=None,
         mismatch=mismatch,
+        needs_portion=False,
+        available_servings=[],
     )
     if mismatch is not None:
         item["confidence"] = min(float(item.get("confidence", 0.5)), 0.35)
     elif item.get("label_kcal"):
         item["confidence"] = max(float(item.get("confidence", 0.5)), 0.85)
+
+
+async def apply_portion_choice(
+    fs: FatSecretClient, item: dict, serving_id: str, count: float
+) -> None:
+    if count <= 0:
+        raise ValueError("Количество порций должно быть положительным")
+    item["manual_serving_id"] = serving_id
+    item["amount"] = count
+    item["unit"] = "piece"
+    await apply_candidate(fs, item, item.get("chosen", 0))
 
 
 async def pick_best_candidate(fs: FatSecretClient, item: dict) -> None:
@@ -294,7 +361,11 @@ async def pick_best_candidate(fs: FatSecretClient, item: dict) -> None:
 
 
 async def create_own_food(
-    fs: FatSecretClient, item: dict, token: str, token_secret: str
+    fs: FatSecretClient,
+    item: dict,
+    token: str,
+    token_secret: str,
+    on_created: Callable[[], Awaitable[None]] | None = None,
 ) -> str | None:
     """Создать Свой продукт из считанных с этикетки КБЖУ и подставить его в пункт."""
     spec = item.get("creatable")
@@ -314,6 +385,10 @@ async def create_own_food(
     )
     item["candidates"] = [{"food_id": food_id, "title": spec["name"], "description": "свой"}]
     item.pop("creatable", None)
+    item["status"] = "pending"
+    item["own_food_id"] = food_id
+    if on_created:
+        await on_created()
     await apply_candidate(fs, item, chosen=0)
     return food_id
 
@@ -357,19 +432,38 @@ def refresh_confidence(draft: dict) -> None:
 
 
 async def write_draft(
-    fs: FatSecretClient, draft: dict, token: str, token_secret: str
+    fs: FatSecretClient,
+    draft: dict,
+    token: str,
+    token_secret: str,
+    persist: Callable[[], Awaitable[None]] | None = None,
+    record_success: Callable[[str], Awaitable[None]] | None = None,
 ) -> WriteReport:
     report = WriteReport(written=[], failed=[], entry_ids=[])
     day = date.fromisoformat(draft["day"])
     meal = Meal(draft["meal"])
 
     for item in draft["items"]:
-        if item.get("status") == "written":
-            continue  # повторяем только упавшее — иначе получим дубли
+        if item.get("status") in {"written", "undone"}:
+            continue  # Уже записанное или отменённое не повторяем.
+        if item.get("status") in {"writing", "unknown", "creating", "create_unknown"}:
+            report.failed.append(
+                (item["name_ru"], "исход предыдущего запроса неизвестен; проверь дневник FatSecret")
+            )
+            continue
+        if item.get("needs_portion"):
+            report.failed.append((item["name_ru"], "сначала выбери порцию"))
+            continue
         if not item.get("food_id"):
             report.failed.append((item["name_ru"], "не найден в базе"))
             continue
+        if not item.get("serving_id") or not item.get("units"):
+            report.failed.append((item["name_ru"], "не удалось определить порцию"))
+            continue
 
+        item["status"] = "writing"
+        if persist:
+            await persist()
         try:
             entry_id = await fs.create_entry(
                 token,
@@ -385,13 +479,29 @@ async def write_draft(
             item["status"] = "failed"
             item["error"] = exc.message
             report.failed.append((item.get("title") or item["name_ru"], exc.message))
+            if persist:
+                await persist()
             if exc.token_invalid:
                 report.token_invalid = True
                 break
             continue
+        except FatSecretUnknownOutcome as exc:
+            item["status"] = "unknown"
+            item["error"] = str(exc)
+            report.failed.append(
+                (item.get("title") or item["name_ru"], "неизвестно, записал ли FatSecret позицию")
+            )
+            if persist:
+                await persist()
+            break
 
         item["status"] = "written"
         item["entry_id"] = entry_id
+        item["error"] = None
+        if record_success:
+            await record_success(entry_id)
+        elif persist:
+            await persist()
         report.written.append(item.get("title") or item["name_ru"])
         report.entry_ids.append(entry_id)
 
@@ -399,10 +509,10 @@ async def write_draft(
 
 
 def render_report(report: WriteReport) -> str:
-    lines = [f"✅ {name}" for name in report.written]
-    lines += [f"❌ {name} — {reason}" for name, reason in report.failed]
+    lines = [f"✅ {escape(str(name))}" for name in report.written]
+    lines += [f"❌ {escape(str(name))} — {escape(str(reason))}" for name, reason in report.failed]
     if report.failed and report.written:
-        lines.append("\nЗаписалось не всё. Повтор коснётся только неудавшихся пунктов.")
+        lines.append("\nЗаписалось не всё. Повтор коснётся только безопасных для повтора пунктов.")
     if report.token_invalid:
         lines.append("\nДоступ к твоему аккаунту FatSecret отозван — набери /link заново.")
     return "\n".join(lines) or "Нечего записывать."

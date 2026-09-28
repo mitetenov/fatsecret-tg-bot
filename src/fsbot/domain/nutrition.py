@@ -15,7 +15,7 @@ def plausible(kcal: float, protein: float, fat: float, carbs: float) -> bool:
     values = (kcal, protein, fat, carbs)
     if not all(math.isfinite(value) for value in values):
         return False
-    if not 0 < kcal <= MAX_KCAL:
+    if not 0 <= kcal <= MAX_KCAL:
         return False
     if any(not 0 <= value <= MAX_MACRO for value in (protein, fat, carbs)):
         return False
@@ -25,3 +25,12 @@ def plausible(kcal: float, protein: float, fat: float, carbs: float) -> bool:
         return True
     tolerance = max(MIN_ENERGY_TOLERANCE, RELATIVE_ENERGY_TOLERANCE * kcal)
     return abs(macro_energy - kcal) <= tolerance
+
+
+def validated_nutrition(values: dict[str, object]) -> dict[str, float] | None:
+    """Нормализовать КБЖУ из внешнего источника перед использованием."""
+    try:
+        result = {key: float(values[key]) for key in ("kcal", "protein", "fat", "carbs")}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return result if plausible(**result) else None

@@ -124,11 +124,9 @@ def test_falls_back_to_piece_serving_when_no_metric_exists():
     assert portion.calories == 160
 
 
-def test_grams_requested_but_only_piece_serving_keeps_one_unit():
+def test_grams_requested_but_only_piece_serving_needs_a_choice():
     portion = default_portion(parse_servings(SLICE_ONLY), 150, "g")
-    assert portion is not None
-    assert portion.multiplier == 1.0
-    assert portion.api_units == 1.0
+    assert portion is None
 
 
 def test_missing_fields_do_not_crash_and_default_to_one_unit():

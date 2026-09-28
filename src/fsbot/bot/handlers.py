@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import suppress
+from html import escape
 from io import BytesIO
 from zoneinfo import available_timezones
 
@@ -22,6 +23,7 @@ from aiogram.types import (
 from fsbot.bot import ui
 from fsbot.bot.pipeline import (
     apply_candidate,
+    apply_portion_choice,
     build_draft,
     draft_from_web,
     create_own_food,
@@ -34,13 +36,15 @@ from fsbot.bot.pipeline import (
 )
 from fsbot.config import Config
 from fsbot.domain import barcodes, naming
-from fsbot.fatsecret.client import FatSecretClient, FatSecretError
+from fsbot.fatsecret.client import FatSecretClient, FatSecretError, FatSecretUnknownOutcome
 from fsbot.foodfacts import OpenFoodFacts
 from fsbot.llm.openrouter import LLMError, OpenRouter
 from fsbot.storage import Storage
 
 log = logging.getLogger(__name__)
 router = Router()
+router.message.filter(F.chat.type == "private")
+router.callback_query.filter(F.message.chat.type == "private")
 
 BARCODE = re.compile(r"^\d{8,14}$")
 
@@ -82,6 +86,7 @@ class Link(StatesGroup):
 
 class Edit(StatesGroup):
     waiting_amount = State()
+    waiting_portions = State()
 
 
 class Barcode(StatesGroup):
@@ -167,7 +172,7 @@ async def link(
     try:
         token, secret, url = await fs.request_token()
     except FatSecretError as exc:
-        await message.answer(f"FatSecret не выдал токен: {exc.message}")
+        await message.answer(f"FatSecret не выдал токен: {escape(str(exc.message))}")
         return
 
     await state.set_state(Link.waiting_pin)
@@ -188,7 +193,7 @@ async def link_pin(
     try:
         token, secret = await fs.access_token(data["token"], data["secret"], pin)
     except FatSecretError as exc:
-        await message.answer(f"{exc.message}\nПришли PIN ещё раз или начни заново: /link")
+        await message.answer(f"{escape(str(exc.message))}\nПришли PIN ещё раз или начни заново: /link")
         return
 
     await storage.save_link(message.from_user.id, token, secret)
@@ -203,6 +208,8 @@ async def link_pin(
 @router.message(Link.waiting_tz)
 @router.message(Command("tz"))
 async def set_tz(message: Message, state: FSMContext, storage: Storage, cfg: Config) -> None:
+    if not await _gate(message, storage, cfg):
+        return
     text = (message.text or "").strip()
     if text.startswith("/tz"):
         _, _, text = text.partition(" ")
@@ -235,25 +242,27 @@ async def undo(message: Message, storage: Storage, cfg: Config, fs: FatSecretCli
     if not user:
         return
 
-    last = await storage.last_batch(user.user_id)
+    last = await storage.claim_last_batch(user.user_id)
     if not last:
-        await message.answer("Нечего отменять — записей от бота ещё не было.")
+        await message.answer("Нечего отменять или последняя запись сейчас обрабатывается.")
         return
 
     batch_id, entry_ids = last
-    removed, failed = 0, []
-    for entry_id in entry_ids:
-        try:
-            await fs.delete_entry(user.token, user.token_secret, entry_id)
-            removed += 1
-        except FatSecretError as exc:
-            failed.append(exc.message)
-
-    await storage.delete_batch(batch_id)
-    text = f"Удалил записей: {removed}."
+    removed, failed = [], []
+    try:
+        for entry_id in entry_ids:
+            try:
+                await fs.delete_entry(user.token, user.token_secret, entry_id)
+                await storage.record_undo_success(batch_id, user.user_id, entry_id)
+                removed.append(entry_id)
+            except (FatSecretError, FatSecretUnknownOutcome) as exc:
+                failed.append(exc.message if isinstance(exc, FatSecretError) else str(exc))
+    finally:
+        await storage.release_batch(batch_id, user.user_id)
+    answer = f"Удалил записей: {len(removed)}."
     if failed:
-        text += "\nНе удалось: " + "; ".join(failed[:3])
-    await message.answer(text)
+        answer += "\nНе удалось: " + "; ".join(escape(str(error)) for error in failed[:3])
+    await message.answer(answer)
 
 
 @router.message(Edit.waiting_amount)
@@ -261,22 +270,64 @@ async def amount_reply(
     message: Message, state: FSMContext, storage: Storage, fs: FatSecretClient
 ) -> None:
     log.info("получено количество: %r", message.text)
-    raw = (message.text or "").replace(",", ".").strip()
-    match = re.search(r"\d+(\.\d+)?", raw)
-    if not match:
-        await message.answer("Нужно число, например <code>150</code>.")
+    amount = _positive_number(message.text or "")
+    if amount is None:
+        await message.answer("Нужно положительное число, например <code>150</code>.")
         return
 
     data = await state.get_data()
     draft_id, index = data["draft_id"], data["index"]
-    draft = await storage.get_draft(draft_id)
+    draft = await storage.get_draft(draft_id, message.from_user.id)
     if not draft:
         await state.clear()
         await message.answer("Черновик уже неактуален — пришли еду заново.")
         return
 
     await state.clear()
-    await _apply_amount(message, draft_id, draft, index, float(match.group(0)), storage, fs)
+    await _apply_amount(message, draft_id, draft, index, amount, storage, fs)
+
+
+def _positive_number(raw: str) -> float | None:
+    match = re.fullmatch(
+        r"\s*(\d+(?:[.,]\d+)?)\s*(?:г|гр|g|мл|ml|шт|pieces?)?\s*",
+        raw,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = float(match.group(1).replace(",", "."))
+    return value if 0 < value <= 100000 else None
+
+
+@router.message(Edit.waiting_portions)
+async def portions_reply(
+    message: Message, state: FSMContext, storage: Storage, fs: FatSecretClient
+) -> None:
+    count = _positive_number(message.text or "")
+    if count is None:
+        await message.answer("Пришли количество порций числом, например <code>1,5</code>.")
+        return
+    data = await state.get_data()
+    draft_id, index = data["draft_id"], data["index"]
+    draft = await storage.get_draft(draft_id, message.from_user.id)
+    if not draft:
+        await state.clear()
+        await message.answer("Черновик уже неактуален — пришли еду заново.")
+        return
+    await state.clear()
+    claimed = await storage.claim_draft(draft_id, message.from_user.id)
+    if claimed is None:
+        await message.answer("Черновик сейчас обрабатывается или уже закрыт.")
+        return
+    try:
+        item = claimed["items"][index]
+        if item.get("status") in {"written", "undone", "writing", "unknown", "creating", "create_unknown"}:
+            await message.answer("Эту позицию нельзя менять сейчас.")
+            return
+        await apply_portion_choice(fs, item, data["serving_id"], count)
+        await _save_and_show_card(message, draft_id, claimed, storage)
+    finally:
+        await storage.release_draft(draft_id, message.from_user.id)
 
 
 async def _apply_amount(
@@ -294,11 +345,27 @@ async def _apply_amount(
     кнопками и старым количеством — человек видит «бот всё равно предлагает 360 г»
     и жмёт «Записать» на устаревшем варианте.
     """
-    await set_amount(fs, draft["items"][index], amount)
+    claimed = await storage.claim_draft(draft_id, message.from_user.id)
+    if claimed is None:
+        await message.answer("Черновик сейчас обрабатывается или уже закрыт.")
+        return
+    try:
+        item = claimed["items"][index]
+        if item.get("status") in {"written", "undone", "writing", "unknown", "creating", "create_unknown"}:
+            await message.answer("Эту позицию нельзя менять сейчас.")
+            return
+        await set_amount(fs, item, amount)
+        await _save_and_show_card(message, draft_id, claimed, storage)
+    finally:
+        await storage.release_draft(draft_id, message.from_user.id)
+
+
+async def _save_and_show_card(
+    message: Message, draft_id: int, draft: dict, storage: Storage
+) -> None:
     draft.pop("review_prompted", None)
     refresh_confidence(draft)
-    await storage.update_draft(draft_id, draft)
-
+    await storage.update_draft(draft_id, draft, message.from_user.id)
     text, markup = ui.render_draft(draft), ui.draft_keyboard(draft_id, draft)
     card = draft.get("card_message_id")
     if card:
@@ -309,7 +376,7 @@ async def _apply_amount(
             return
     sent = await message.answer(text, reply_markup=markup)
     draft["card_message_id"] = sent.message_id
-    await storage.update_draft(draft_id, draft)
+    await storage.update_draft(draft_id, draft, message.from_user.id)
 
 
 @router.message(F.text.regexp(BARCODE))
@@ -327,6 +394,7 @@ async def barcode(
     user = await _linked(message, storage)
     if not user:
         return
+    await state.clear()
     await _by_barcode(
         message, (message.text or "").strip(), state, storage, cfg, fs, llm, off, user
     )
@@ -366,16 +434,22 @@ async def _food_by_barcode(code: str, storage: Storage, fs: FatSecretClient, use
     if food_id:
         log.info("штрих-код %s → свой продукт %s", code, food_id)
         return food_id
-    try:
-        return await fs.food_id_by_barcode(code)
-    except FatSecretError as exc:
-        log.warning("поиск по штрих-коду не удался: %s", exc.message)
+    gtin13 = barcodes.fatsecret_gtin13(code)
+    if gtin13 is None:
         return None
+    try:
+        return await fs.food_id_by_barcode(gtin13)
+    except FatSecretError as exc:
+        if exc.code == 211:
+            return None
+        raise
 
 
 async def _show_food(note: Message, food_id: str, user, storage: Storage, cfg, fs) -> None:
     draft = await draft_from_food(fs, food_id, user.tz or cfg.default_tz)
     draft_id = await storage.save_draft(user.user_id, draft)
+    draft["card_message_id"] = note.message_id
+    await storage.update_draft(draft_id, draft, user.user_id)
     await note.edit_text(ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft))
 
 
@@ -390,6 +464,9 @@ async def _by_barcode(
     off: OpenFoodFacts,
     user,
 ) -> None:
+    if not barcodes.valid_gtin(code):
+        await message.answer("Штрих-код неверной длины или с неправильной контрольной цифрой.")
+        return
     note = await message.answer("Ищу по штрих-коду…")
 
     food_id = await _food_by_barcode(code, storage, fs, user)
@@ -400,10 +477,10 @@ async def _by_barcode(
     await note.edit_text("В базе FatSecret кода нет — ищу товар по коду…")
     product = await _lookup_product(code, off, llm)
     if product:
-        draft = draft_from_web(product, user.tz or cfg.default_tz, code)
+        draft = await draft_from_web(fs, product, user.tz or cfg.default_tz, code)
         draft_id = await storage.save_draft(user.user_id, draft)
         draft["card_message_id"] = note.message_id
-        await storage.update_draft(draft_id, draft)
+        await storage.update_draft(draft_id, draft, user.user_id)
         await note.edit_text(
             ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
         )
@@ -476,16 +553,16 @@ async def _photo_flow(
         if found:
             await _show_food(note, found, user, storage, cfg, fs)
             return
-        # Кода нет в базе FatSecret. Искать там же по названию бессмысленно — если бы
-        # товар там был, он нашёлся бы по коду. Спрашиваем модель именно про код.
+        # Кода нет в индексе FatSecret. Данные по нему сверим с поиском по названию
+        # прежде, чем предлагать создать свой продукт.
         log.info("штрих-код %s не найден в базе — ищу товар по коду", scanned)
         await note.edit_text("Кода нет в базе FatSecret — ищу товар по коду…")
         product = await _lookup_product(scanned, off, llm)
         if product:
-            draft = draft_from_web(product, user.tz or cfg.default_tz, scanned)
+            draft = await draft_from_web(fs, product, user.tz or cfg.default_tz, scanned)
             draft_id = await storage.save_draft(user.user_id, draft)
             draft["card_message_id"] = note.message_id
-            await storage.update_draft(draft_id, draft)
+            await storage.update_draft(draft_id, draft, user.user_id)
             await note.edit_text(
                 ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
             )
@@ -511,7 +588,8 @@ AMOUNT_ONLY = re.compile(r"^\d{1,4}([.,]\d+)?\s*(г|гр|g|мл|ml)?$", re.IGNOR
 
 @router.message(F.text.regexp(AMOUNT_ONLY))
 async def bare_amount(
-    message: Message, storage: Storage, cfg: Config, fs: FatSecretClient, llm: OpenRouter
+    message: Message, state: FSMContext, storage: Storage, cfg: Config,
+    fs: FatSecretClient, llm: OpenRouter
 ) -> None:
     """«450» после карточки — это правка количества, а не новая еда.
 
@@ -523,15 +601,20 @@ async def bare_amount(
     user = await _linked(message, storage)
     if not user:
         return
+    if await state.get_state() == Barcode.waiting_label:
+        await state.clear()
 
     latest = await storage.last_draft(user.user_id)
     if not latest or len(latest[1].get("items", [])) != 1:
         # Карточки нет или пунктов несколько — непонятно, к чему относить число.
-        await text(message, storage, cfg, fs, llm)
+        await text(message, state, storage, cfg, fs, llm)
         return
 
     draft_id, draft = latest
-    amount = float(re.sub(r"[^\d.,]", "", message.text).replace(",", "."))
+    amount = _positive_number(message.text or "")
+    if amount is None:
+        await message.answer("Количество должно быть положительным.")
+        return
     log.info("число %s применяю к черновику %s без кнопки", amount, draft_id)
     await _apply_amount(message, draft_id, draft, 0, amount, storage, fs)
 
@@ -539,6 +622,7 @@ async def bare_amount(
 @router.message(F.text)
 async def text(
     message: Message,
+    state: FSMContext,
     storage: Storage,
     cfg: Config,
     fs: FatSecretClient,
@@ -549,6 +633,8 @@ async def text(
     user = await _linked(message, storage)
     if not user:
         return
+    if await state.get_state() == Barcode.waiting_label:
+        await state.clear()
 
     note = await message.answer("Разбираю…")
     try:
@@ -576,7 +662,10 @@ async def _present(
         ", ".join(item.query_en for item in recognition.items)[:120],
     )
 
-    recent = await fs.recently_eaten(user.token, user.token_secret)
+    try:
+        recent = await fs.recently_eaten(user.token, user.token_secret)
+    except FatSecretUnknownOutcome:
+        recent = []
     log.info("недавно съеденных для ранжирования: %d", len(recent))
 
     draft = await build_draft(fs, recognition, user.tz or cfg.default_tz, recent, barcode)
@@ -585,7 +674,7 @@ async def _present(
 
     draft_id = await storage.save_draft(user.user_id, draft)
     draft["card_message_id"] = note.message_id
-    await storage.update_draft(draft_id, draft)
+    await storage.update_draft(draft_id, draft, user.user_id)
     await note.edit_text(
         ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
     )
@@ -621,23 +710,51 @@ async def callbacks(
     fs: FatSecretClient,
     cfg: Config,
 ) -> None:
-    draft_id, action, arg = ui.parse_cb(call.data or "")
-    log.info("кнопка %r arg=%r черновик=%s", action, arg, draft_id)
-
-    draft = await storage.get_draft(draft_id)
-    if draft is None:
-        await call.answer("Черновик уже неактуален", show_alert=True)
+    try:
+        draft_id, action, arg = ui.parse_cb(call.data or "")
+    except (ValueError, TypeError):
+        await call.answer("Неизвестная кнопка", show_alert=True)
         return
+    log.info("кнопка %r arg=%r черновик=%s", action, arg, draft_id)
+    user_id = call.from_user.id
+    draft = await storage.claim_draft(draft_id, user_id)
+    if draft is None:
+        await call.answer("Черновик уже неактуален или обрабатывается", show_alert=True)
+        return
+    try:
+        await _handle_callback(
+            call, state, storage, fs, cfg, draft_id, action, arg, draft
+        )
+    finally:
+        await storage.release_draft(draft_id, user_id)
+
+
+async def _handle_callback(
+    call: CallbackQuery, state: FSMContext, storage: Storage, fs: FatSecretClient,
+    cfg: Config, draft_id: int, action: str, arg: str, draft: dict,
+) -> None:
+    user_id = call.from_user.id
 
     if action == ui.CANCEL:
-        await storage.delete_draft(draft_id)
-        await call.message.edit_text("Отменил, в дневник ничего не пошло.")
+        written = sum(item.get("status") == "written" for item in draft["items"])
+        unknown = any(item.get("status") in {"writing", "unknown", "creating", "create_unknown"}
+                      for item in draft["items"])
+        await storage.delete_draft(draft_id, user_id)
+        if written or unknown:
+            notice = f"Черновик закрыт. Уже записано позиций: {written}."
+            if written:
+                notice += " Их можно удалить командой /undo."
+            if unknown:
+                notice += " Исход ещё одного запроса неизвестен — проверь FatSecret."
+        else:
+            notice = "Отменил, в дневник ничего не пошло."
+        await call.message.edit_text(notice)
         await call.answer()
         return
 
     if action == ui.REVIEW:
         draft["review_prompted"] = True
-        await storage.update_draft(draft_id, draft)
+        await storage.update_draft(draft_id, draft, user_id)
         await call.message.edit_reply_markup(reply_markup=ui.review_keyboard(draft_id))
         await call.answer(
             "Проверь продукт, количество и КБЖУ. Повторное нажатие выполнит запись.",
@@ -648,7 +765,7 @@ async def callbacks(
     if action == ui.WRITE:
         if draft.get("needs_review") and not draft.get("review_prompted"):
             draft["review_prompted"] = True
-            await storage.update_draft(draft_id, draft)
+            await storage.update_draft(draft_id, draft, user_id)
             await call.message.edit_reply_markup(reply_markup=ui.review_keyboard(draft_id))
             await call.answer("Нужна дополнительная проверка", show_alert=True)
             return
@@ -656,15 +773,21 @@ async def callbacks(
         if not user or not user.is_linked:
             await call.answer("Сначала /link", show_alert=True)
             return
-        report = await write_draft(fs, draft, user.token, user.token_secret)
-        await storage.update_draft(draft_id, draft)
-        if report.entry_ids:
-            await storage.save_batch(user.user_id, report.entry_ids)
+        async def persist() -> None:
+            await storage.update_draft(draft_id, draft, user_id)
+
+        async def record(entry_id: str) -> None:
+            await storage.record_write_success(draft_id, user_id, draft, entry_id)
+
+        report = await write_draft(
+            fs, draft, user.token, user.token_secret,
+            persist=persist, record_success=record,
+        )
         if report.token_invalid:
             await storage.invalidate_link(user.user_id)
         if not report.failed:
-            await storage.delete_draft(draft_id)
-            await call.message.edit_text(render_report(report))
+            await storage.delete_draft(draft_id, user_id)
+            await call.message.edit_text(render_report(report) if report.written else "Все позиции записаны.")
         else:
             await call.message.edit_text(
                 render_report(report), reply_markup=ui.draft_keyboard(draft_id, draft)
@@ -674,55 +797,97 @@ async def callbacks(
 
     if action == ui.EDIT:
         draft.pop("review_prompted", None)
-        await storage.update_draft(draft_id, draft)
+        await storage.update_draft(draft_id, draft, user_id)
         await call.message.edit_text(
             ui.render_draft(draft), reply_markup=ui.edit_keyboard(draft_id, draft)
         )
     elif action == ui.PICK_ITEM:
         index = int(arg)
+        if draft["items"][index].get("status") in {"written", "undone", "writing", "unknown", "creating", "create_unknown"}:
+            await call.answer("Эту позицию нельзя менять", show_alert=True)
+            return
         await call.message.edit_text(
             ui.render_draft(draft),
             reply_markup=ui.item_keyboard(draft_id, index, draft["items"][index]),
         )
     elif action == ui.PICK_CANDIDATE:
         index, position = (int(part) for part in arg.split("."))
+        if draft["items"][index].get("status") in {"written", "undone", "writing", "unknown", "creating", "create_unknown"}:
+            await call.answer("Эту позицию нельзя менять сейчас", show_alert=True)
+            return
+        draft["items"][index].pop("manual_serving_id", None)
         await apply_candidate(fs, draft["items"][index], position)
         draft.pop("review_prompted", None)
         refresh_confidence(draft)
-        await storage.update_draft(draft_id, draft)
+        await storage.update_draft(draft_id, draft, user_id)
         await call.message.edit_text(
             ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
         )
+    elif action == ui.PICK_SERVING:
+        index_str, serving_id = arg.split(".", 1)
+        index = int(index_str)
+        item = draft["items"][index]
+        if not item.get("needs_portion") or serving_id not in {
+            serving["serving_id"] for serving in item.get("available_servings") or []
+        }:
+            await call.answer("Порция уже неактуальна", show_alert=True)
+            return
+        await state.set_state(Edit.waiting_portions)
+        await state.update_data(draft_id=draft_id, index=index, serving_id=serving_id)
+        await call.message.answer("Сколько таких порций съел? Пришли число, например 1,5.")
     elif action == ui.CREATE_FOOD:
-        user = await storage.get_user(call.from_user.id)
+        user = await storage.get_user(user_id)
         if not user or not user.is_linked:
             await call.answer("Сначала /link", show_alert=True)
             return
         index = int(arg)
+        item = draft["items"][index]
+        if not item.get("creatable") or item.get("status", "pending") != "pending":
+            await call.answer("Продукт уже создаётся или создан", show_alert=True)
+            return
         await call.answer("Создаю продукт…")
+        item["status"] = "creating"
+        await storage.update_draft(draft_id, draft, user_id)
+
+        async def on_created() -> None:
+            await storage.update_draft(draft_id, draft, user_id)
+            if draft.get("barcode") and item.get("own_food_id"):
+                await storage.bind_barcode(user_id, draft["barcode"], item["own_food_id"])
+                log.info("связал штрих-код %s с продуктом %s", draft["barcode"], item["own_food_id"])
+
         try:
             food_id = await create_own_food(
-                fs, draft["items"][index], user.token, user.token_secret
+                fs, item, user.token, user.token_secret, on_created=on_created
             )
         except FatSecretError as exc:
-            await call.message.answer(f"Не удалось создать продукт: {exc.message}")
+            item["status"] = "pending"
+            await storage.update_draft(draft_id, draft, user_id)
+            await call.message.answer(f"Не удалось создать продукт: {escape(str(exc.message))}")
+            return
+        except FatSecretUnknownOutcome:
+            if item.get("own_food_id"):
+                # Creation returned an ID and was already persisted. Only the
+                # follow-up food.get failed; choosing the candidate can retry it.
+                item["status"] = "pending"
+                item["error"] = "Продукт создан; не удалось загрузить порции. Выбери его ещё раз."
+            else:
+                item["status"] = "create_unknown"
+            await storage.update_draft(draft_id, draft, user_id)
+            await call.message.edit_text(ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft))
             return
 
-        # Связка живёт у нас, а не в FatSecret: следующее сканирование этого кода
-        # найдёт продукт сразу, без фото и без создания дубля.
-        if food_id and draft.get("barcode"):
-            await storage.bind_barcode(user.user_id, draft["barcode"], food_id)
-            log.info("связал штрих-код %s с продуктом %s", draft["barcode"], food_id)
-
-        refresh_confidence(draft)
         draft.pop("review_prompted", None)
-        await storage.update_draft(draft_id, draft)
+        refresh_confidence(draft)
+        await storage.update_draft(draft_id, draft, user_id)
         await call.message.edit_text(
             ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
         )
         return
 
     elif action == ui.ASK_GRAMS:
+        if draft["items"][int(arg)].get("status") in {"written", "undone", "writing", "unknown", "creating", "create_unknown"}:
+            await call.answer("Эту позицию нельзя менять", show_alert=True)
+            return
         await state.set_state(Edit.waiting_amount)
         await state.update_data(draft_id=draft_id, index=int(arg))
         log.info("жду количество для позиции %s черновика %s", arg, draft_id)
@@ -731,8 +896,11 @@ async def callbacks(
         if not arg:
             await call.message.edit_reply_markup(reply_markup=ui.meal_keyboard(draft_id))
         else:
+            if any(item.get("status") in {"written", "writing", "unknown"} for item in draft["items"]):
+                await call.answer("Часть позиций уже записана; приём пищи теперь нельзя менять", show_alert=True)
+                return
             draft["meal"] = arg
-            await storage.update_draft(draft_id, draft)
+            await storage.update_draft(draft_id, draft, user_id)
             await call.message.edit_text(
                 ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
             )
@@ -740,10 +908,12 @@ async def callbacks(
         if not arg:
             await call.message.edit_reply_markup(reply_markup=ui.date_keyboard(draft_id))
         else:
-            user = await storage.get_user(call.from_user.id)
-            tz = user.tz if user and user.tz else cfg.default_tz
-            shift_day(draft, arg, tz)
-            await storage.update_draft(draft_id, draft)
+            if any(item.get("status") in {"written", "writing", "unknown"} for item in draft["items"]):
+                await call.answer("Часть позиций уже записана; дату теперь нельзя менять", show_alert=True)
+                return
+            user = await storage.get_user(user_id)
+            shift_day(draft, arg, (user.tz if user and user.tz else cfg.default_tz))
+            await storage.update_draft(draft_id, draft, user_id)
             await call.message.edit_text(
                 ui.render_draft(draft), reply_markup=ui.draft_keyboard(draft_id, draft)
             )

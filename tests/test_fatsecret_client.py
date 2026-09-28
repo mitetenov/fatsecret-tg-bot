@@ -156,7 +156,7 @@ def test_barcode_v2_propagates_real_api_errors():
 
 
 def test_create_entry_sends_exact_legacy_diary_contract():
-    client = PayloadClient({"food_entry_id": {"value": "entry-1"}})
+    client = PayloadClient({"food_entries": {"food_entry": [{"food_entry_id": "entry-1"}]}})
 
     entry_id = asyncio.run(
         client.create_entry(

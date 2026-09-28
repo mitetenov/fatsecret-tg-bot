@@ -22,6 +22,8 @@ ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 TEXT_PROMPT = """Ты разбираешь короткие реплики о съеденной еде на русском языке.
 Верни JSON: {"kind":"text","items":[...]}.
+Одна реплика — один приём пищи в один день. Укажи общий meal и date_hint для
+всех продуктов, если человек назвал приём пищи или дату.
 На каждый продукт — объект: query_en (короткий английский поисковый запрос для базы
 продуктов США, без брендов, если бренд не назван), name_ru (как сказал человек),
 amount (число), unit ("g", "ml" или "piece"), meal (breakfast/lunch/dinner/other,
@@ -201,11 +203,11 @@ class OpenRouter:
             except (LLMError, ParseError) as exc:
                 log.info("поиск товара по коду %s не удался: %s", barcode, exc)
                 return None
-            if data.get("found"):
+            if isinstance(data, dict) and data.get("found"):
                 break
             log.info("попытка %d: товар по коду %s не найден", attempt + 1, barcode)
 
-        if not data.get("found"):
+        if not isinstance(data, dict) or not data.get("found"):
             return None
         product = _normalize_lookup_product(data)
         if product:
@@ -240,6 +242,8 @@ class OpenRouter:
             log.info("не удалось перевести название %r: %s", name, exc)
             return None
 
+        if not isinstance(data, dict):
+            return None
         translated = str(data.get("name") or "").strip()
         if not translated:
             return None
