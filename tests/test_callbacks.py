@@ -41,6 +41,7 @@ class FakeStorage:
         self.deleted = []
         self.batches = []
         self.bindings = []
+        self.claimed = False
         self.user = SimpleNamespace(
             user_id=42,
             token="token",
@@ -49,22 +50,32 @@ class FakeStorage:
             tz="UTC",
         )
 
-    async def get_draft(self, draft_id):
+    async def get_draft(self, draft_id, user_id):
+        return self.draft if user_id == 42 else None
+
+    async def claim_draft(self, draft_id, user_id):
+        if self.claimed or user_id != 42 or self.draft is None:
+            return None
+        self.claimed = True
         return self.draft
 
-    async def update_draft(self, draft_id, payload):
+    async def release_draft(self, draft_id, user_id):
+        self.claimed = False
+
+    async def update_draft(self, draft_id, payload, user_id):
         self.draft = payload
         self.updated.append(copy.deepcopy(payload))
 
-    async def delete_draft(self, draft_id):
+    async def delete_draft(self, draft_id, user_id):
         self.deleted.append(draft_id)
         self.draft = None
 
     async def get_user(self, user_id):
         return self.user
 
-    async def save_batch(self, user_id, entry_ids):
-        self.batches.append((user_id, entry_ids))
+    async def record_write_success(self, draft_id, user_id, payload, entry_id):
+        self.batches.append((user_id, [entry_id]))
+        self.draft = payload
 
     async def invalidate_link(self, user_id):
         raise AssertionError("валидный токен не должен инвалидироваться")
@@ -237,7 +248,7 @@ def test_expired_and_cancelled_drafts_never_reach_fatsecret():
 
     invoke(expired, expired_storage, fs)
 
-    assert expired.answers == [("Черновик уже неактуален", True)]
+    assert expired.answers == [("Черновик уже неактуален или обрабатывается", True)]
     assert fs.entries == []
 
     cancel_storage = FakeStorage(pending_draft())

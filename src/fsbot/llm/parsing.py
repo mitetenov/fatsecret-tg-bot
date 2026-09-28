@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from fsbot.domain import nutrition as nutrition_rules
+from fsbot.domain.barcodes import canonical_gtin
 
 UNITS = {"g", "ml", "piece"}
 MEALS = {"breakfast", "lunch", "dinner", "other"}
@@ -120,13 +121,18 @@ def extract_json(raw: str) -> dict:
 
 def parse_recognition(raw: str) -> Recognition:
     payload = extract_json(raw)
+    if not isinstance(payload, dict):
+        raise ParseError("ответ модели должен быть объектом")
 
     kind = str(payload.get("kind") or "text")
     if kind not in {"text", "plate", "label"}:
         kind = "text"
 
     items: list[RecognizedItem] = []
-    for entry in payload.get("items") or []:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise ParseError("модель не вернула список продуктов")
+    for entry in raw_items:
         if not isinstance(entry, dict):
             continue
         item = _parse_item(entry, kind)
@@ -140,8 +146,11 @@ def parse_recognition(raw: str) -> Recognition:
 
 def _parse_barcode(value: object) -> str | None:
     """Штрих-код с фото: только цифры и правдоподобная длина GTIN."""
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
-    return digits if 8 <= len(digits) <= 14 else None
+    raw = str(value or "").strip()
+    if any(char not in "0123456789 -" for char in raw):
+        return None
+    digits = "".join(ch for ch in raw if ch.isascii() and ch.isdigit())
+    return canonical_gtin(digits)
 
 
 def _parse_item(entry: dict, kind: str = "text") -> RecognizedItem | None:
@@ -153,7 +162,7 @@ def _parse_item(entry: dict, kind: str = "text") -> RecognizedItem | None:
         amount = float(entry.get("amount"))
     except (TypeError, ValueError):
         return None
-    if amount <= 0:
+    if not math.isfinite(amount) or amount <= 0 or round(amount, 2) <= 0:
         return None
 
     unit = str(entry.get("unit") or "g").lower()
@@ -219,8 +228,8 @@ def _parse_nutrition(entry: dict) -> Nutrition | None:
     for field_name in generic:
         key = generic[field_name] if generic[field_name] in entry else legacy[field_name]
         try:
-            values[field_name] = float(entry[key])
-        except (KeyError, TypeError, ValueError):
+            values[field_name] = entry[key]
+        except KeyError:
             return None
     if not nutrition_rules.plausible(**values):
         return None

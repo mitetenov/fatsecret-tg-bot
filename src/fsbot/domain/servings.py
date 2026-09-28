@@ -9,6 +9,7 @@ Legacy `food_entry.create` принимает не граммы, а `serving_id`
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 NUTRIENT_KEYS = ("calories", "protein", "fat", "carbohydrate")
@@ -16,9 +17,10 @@ NUTRIENT_KEYS = ("calories", "protein", "fat", "carbohydrate")
 
 def _decimal(value: object) -> float | None:
     try:
-        return float(str(value))
+        result = float(str(value))
     except (TypeError, ValueError):
         return None
+    return result if math.isfinite(result) else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,19 +39,22 @@ class Serving:
 
     @classmethod
     def from_api(cls, raw: dict) -> Serving:
-        nutrients = {key: _decimal(raw.get(key)) or 0.0 for key in NUTRIENT_KEYS}
+        nutrients = {
+            key: max(0.0, _decimal(raw.get(key)) or 0.0) for key in NUTRIENT_KEYS
+        }
+        units = _decimal(raw.get("number_of_units"))
         return cls(
             serving_id=str(raw.get("serving_id", "")),
             description=str(raw.get("serving_description", "")).strip(),
             metric_amount=_decimal(raw.get("metric_serving_amount")),
             metric_unit=(raw.get("metric_serving_unit") or None),
-            units_per_serving=_decimal(raw.get("number_of_units")) or 1.0,
+            units_per_serving=units if units is not None and units > 0 else 1.0,
             **nutrients,
         )
 
     @property
     def is_metric(self) -> bool:
-        return bool(self.metric_amount) and self.metric_unit in {"g", "ml"}
+        return self.metric_amount is not None and self.metric_amount > 0 and self.metric_unit in {"g", "ml"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +146,6 @@ def default_portion(servings: list[Serving], amount: float, unit: str) -> Portio
         swapped = by_metric_amount(servings, amount, INTERCHANGEABLE[unit])
         if swapped:
             return swapped
-    if not servings:
-        return None
-    return Portion(serving=servings[0], multiplier=amount if unit == "piece" else 1.0)
+    if unit == "piece" and servings:
+        return Portion(serving=servings[0], multiplier=amount)
+    return None

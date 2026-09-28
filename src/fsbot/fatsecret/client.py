@@ -22,7 +22,7 @@ AUTHORIZE_URL = "https://authentication.fatsecret.com/oauth/authorize"
 ACCESS_TOKEN_URL = "https://authentication.fatsecret.com/oauth/access_token"
 
 # Коды FatSecret, означающие «доступ пользователя больше не действителен».
-INVALID_TOKEN_CODES = {4, 9, 14}
+INVALID_TOKEN_CODES = {9}
 # Метод недоступен на тарифе: на Basic так отвечали штрих-код и создание продуктов.
 FORBIDDEN_CODES = {12, 13, 21}
 
@@ -30,7 +30,10 @@ FORBIDDEN_CODES = {12, 13, 21}
 class FatSecretError(Exception):
     def __init__(self, code: int | None, message: str) -> None:
         super().__init__(f"[{code}] {message}")
-        self.code = code
+        try:
+            self.code = int(code) if code is not None else None
+        except (TypeError, ValueError):
+            self.code = None
         self.message = message
 
     @property
@@ -40,6 +43,10 @@ class FatSecretError(Exception):
     @property
     def not_available_on_tier(self) -> bool:
         return self.code in FORBIDDEN_CODES
+
+
+class FatSecretUnknownOutcome(Exception):
+    """A write may have reached FatSecret, but its result cannot be confirmed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,11 +93,20 @@ class FatSecretClient:
             token=token,
             token_secret=token_secret,
         )
-        response = await self._client.get(API, params=signed)
-        payload = response.json()
+        try:
+            response = await self._client.get(API, params=signed)
+            payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise FatSecretUnknownOutcome(f"Нет подтверждённого ответа FatSecret: {exc}") from exc
         if isinstance(payload, dict) and "error" in payload:
             error = payload["error"]
-            raise FatSecretError(error.get("code"), error.get("message", ""))
+            if isinstance(error, dict):
+                raise FatSecretError(error.get("code"), error.get("message", ""))
+            raise FatSecretUnknownOutcome("Неожиданный формат ошибки FatSecret")
+        if response.status_code != 200 or not isinstance(payload, dict):
+            raise FatSecretUnknownOutcome(
+                f"Неожиданный ответ FatSecret: HTTP {response.status_code}"
+            )
         return payload
 
     # --- привязка аккаунта ------------------------------------------------
@@ -109,7 +125,7 @@ class FatSecretClient:
 
     async def access_token(self, token: str, token_secret: str, pin: str) -> tuple[str, str]:
         signed = signed_params(
-            "POST",
+            "GET",
             ACCESS_TOKEN_URL,
             {},
             self._key,
@@ -118,7 +134,7 @@ class FatSecretClient:
             token_secret=token_secret,
             verifier=pin,
         )
-        response = await self._client.post(ACCESS_TOKEN_URL, data=signed)
+        response = await self._client.get(ACCESS_TOKEN_URL, params=signed)
         if response.status_code >= 400:
             raise FatSecretError(None, "PIN не принят — проверь код и попробуй снова")
         parsed = dict(item.split("=", 1) for item in response.text.split("&"))
@@ -219,7 +235,10 @@ class FatSecretClient:
             fat=fat,
             carbohydrate=carbs,
         )
-        return str((payload.get("food_id") or {}).get("value", ""))
+        food_id = (payload.get("food_id") or {}).get("value")
+        if not food_id:
+            raise FatSecretUnknownOutcome("FatSecret не вернул ID созданного продукта")
+        return str(food_id)
 
     # --- дневник ----------------------------------------------------------
 
@@ -246,15 +265,23 @@ class FatSecretClient:
             meal=meal.value,
             date=to_fatsecret_date(day),
         )
-        return str((payload.get("food_entry_id") or {}).get("value", ""))
+        entries = (payload.get("food_entries") or {}).get("food_entry") or []
+        if isinstance(entries, dict):
+            entries = [entries]
+        entry_id = entries[0].get("food_entry_id") if len(entries) == 1 else None
+        if not entry_id:
+            raise FatSecretUnknownOutcome("FatSecret не вернул ID записи в дневнике")
+        return str(entry_id)
 
     async def delete_entry(self, token: str, token_secret: str, entry_id: str) -> None:
-        await self._call(
+        payload = await self._call(
             "food_entry.delete",
             token=token,
             token_secret=token_secret,
             food_entry_id=entry_id,
         )
+        if str((payload.get("success") or {}).get("value")) != "1":
+            raise FatSecretUnknownOutcome("FatSecret не подтвердил удаление записи")
 
     async def profile_status(self, token: str, token_secret: str) -> dict:
         return await self._call("profile.get", token=token, token_secret=token_secret)

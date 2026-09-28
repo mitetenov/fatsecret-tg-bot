@@ -76,7 +76,12 @@ def test_matching_label_evidence_raises_confidence():
 
 
 def test_web_liquid_draft_preserves_ml_basis_and_confidence():
-    draft = draft_from_web(
+    class NoMatchingFood:
+        async def search_foods(self, query, max_results=5):
+            return []
+
+    draft = asyncio.run(draft_from_web(
+        NoMatchingFood(),
         {
             "name": "Milk",
             "brand": "Sante",
@@ -90,7 +95,7 @@ def test_web_liquid_draft_preserves_ml_basis_and_confidence():
         },
         "UTC",
         "0036000291452",
-    )
+    ))
 
     item = draft["items"][0]
     assert item["unit"] == "ml"
