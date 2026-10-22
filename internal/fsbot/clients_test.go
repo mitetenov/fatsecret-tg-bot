@@ -179,6 +179,9 @@ func TestOpenRouterRepairThenFallback(t *testing.T) {
 		var p Object
 		json.NewDecoder(r.Body).Decode(&p)
 		requests = append(requests, p)
+		if p["thinking"] != nil || p["reasoning_effort"] != nil || p["tools"] != nil {
+			t.Error("ZAI parameters sent to OpenRouter")
+		}
 		content := "bad json"
 		if p["model"] == "second" {
 			content = validRecognition
