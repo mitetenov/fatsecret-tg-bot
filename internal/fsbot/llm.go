@@ -129,17 +129,44 @@ func (e *LLMError) RateLimited() bool {
 }
 
 type LLM struct {
-	Key, Endpoint            string
-	TextModels, VisionModels []string
-	HTTP                     *http.Client
+	Key, Endpoint             string
+	Provider, ReasoningEffort string
+	TextModels, VisionModels  []string
+	HTTP                      *http.Client
 }
 
 func NewLLM(c Config) *LLM {
-	return &LLM{c.OpenRouterKey, "https://openrouter.ai/api/v1/chat/completions", c.TextModels, c.VisionModels, &http.Client{Timeout: 90 * time.Second}}
+	l := &LLM{
+		Key: c.OpenRouterKey, Endpoint: "https://openrouter.ai/api/v1/chat/completions",
+		Provider: first(c.LLMProvider, "openrouter"), TextModels: c.TextModels, VisionModels: c.VisionModels,
+		HTTP: &http.Client{Timeout: 90 * time.Second},
+	}
+	if l.Provider == "zai" {
+		l.Key, l.Endpoint = c.ZAIKey, "https://api.z.ai/api/paas/v4/chat/completions"
+		l.ReasoningEffort = first(c.ZAIReasoningEffort, "low")
+	}
+	return l
 }
-func (l *LLM) one(ctx context.Context, model string, messages []Object, schema bool) (string, error) {
+
+type llmOptions struct {
+	Structured, WebSearch bool
+}
+
+func (l *LLM) one(ctx context.Context, model string, messages []Object, options llmOptions) (string, error) {
+	if options.WebSearch && l.Provider != "zai" && !strings.HasSuffix(model, ":online") {
+		model += ":online"
+	}
 	body := Object{"model": model, "messages": messages}
-	if schema {
+	if l.Provider == "zai" {
+		body["thinking"] = Object{"type": "enabled"}
+		body["reasoning_effort"] = l.ReasoningEffort
+		if options.Structured {
+			body["response_format"] = Object{"type": "json_object"}
+		}
+		if options.WebSearch {
+			body["tools"] = []Object{{"type": "web_search", "web_search": Object{"enable": true, "search_engine": "search-prime", "search_result": true}}}
+		}
+	} else if options.Structured {
 		body["response_format"] = Object{"type": "json_schema", "json_schema": json.RawMessage(recognitionSchemaJSON)}
 		body["provider"] = Object{"require_parameters": true}
 	}
@@ -152,7 +179,9 @@ func (l *LLM) one(ctx context.Context, model string, messages []Object, schema b
 		return "", e
 	}
 	req.Header.Set("Authorization", "Bearer "+l.Key)
-	req.Header.Set("X-Title", "fsbot")
+	if l.Provider != "zai" {
+		req.Header.Set("X-Title", "fsbot")
+	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, e := l.HTTP.Do(req)
 	if e != nil {
@@ -168,8 +197,20 @@ func (l *LLM) one(ctx context.Context, model string, messages []Object, schema b
 	}
 	p, e := decodeObject(b)
 	if e == nil {
+		if l.Provider == "zai" && options.WebSearch {
+			results, _ := p["web_search"].([]any)
+			if len(results) == 0 {
+				return "", &LLMError{[]int{0}, model + ": нет результатов веб-поиска"}
+			}
+		}
 		choices, _ := p["choices"].([]any)
 		if len(choices) > 0 {
+			if l.Provider == "zai" {
+				reason := str(obj(choices[0])["finish_reason"])
+				if reason != "" && reason != "stop" {
+					return "", &LLMError{[]int{0}, model + ": модель не завершила ответ"}
+				}
+			}
 			content, ok := obj(obj(choices[0])["message"])["content"].(string)
 			if ok {
 				return content, nil
@@ -185,10 +226,10 @@ func failureStatuses(e error) []int {
 	}
 	return []int{0}
 }
-func (l *LLM) complete(ctx context.Context, models []string, messages []Object) (string, error) {
+func (l *LLM) complete(ctx context.Context, models []string, messages []Object, options llmOptions) (string, error) {
 	statuses := []int{}
 	for _, m := range models {
-		s, e := l.one(ctx, m, messages, false)
+		s, e := l.one(ctx, m, messages, options)
 		if e == nil {
 			return s, nil
 		}
@@ -207,7 +248,7 @@ func (l *LLM) recognize(ctx context.Context, models []string, messages []Object)
 			if attempt == 1 {
 				msgs = append(append([]Object(nil), messages...), Object{"role": "user", "content": "Верни только валидный JSON."})
 			}
-			raw, e := l.one(ctx, m, msgs, attempt == 0)
+			raw, e := l.one(ctx, m, msgs, llmOptions{Structured: attempt == 0 || l.Provider == "zai"})
 			if e == nil {
 				var r Recognition
 				r, e = ParseRecognition(raw)
@@ -232,7 +273,7 @@ func (l *LLM) Photo(ctx context.Context, image []byte, caption, barcode string) 
 	kind := "label"
 	imagePart := Object{"type": "image_url", "image_url": Object{"url": data}}
 	if barcode == "" {
-		answer, _ := l.complete(ctx, l.VisionModels, []Object{{"role": "user", "content": []Object{{"type": "text", "text": classifyPrompt}, imagePart}}})
+		answer, _ := l.complete(ctx, l.VisionModels, []Object{{"role": "user", "content": []Object{{"type": "text", "text": classifyPrompt}, imagePart}}}, llmOptions{})
 		kind = "plate"
 		if strings.Contains(strings.ToLower(answer), "label") {
 			kind = "label"
@@ -259,17 +300,10 @@ type Product struct {
 }
 
 func (l *LLM) Lookup(ctx context.Context, code string) *Product {
-	models := []string{}
-	for _, m := range l.TextModels {
-		if !strings.HasSuffix(m, ":online") {
-			m += ":online"
-		}
-		models = append(models, m)
-	}
 	prompt := strings.ReplaceAll(barcodePrompt, "{barcode}", code)
 	prompt = strings.ReplaceAll(strings.ReplaceAll(prompt, "{{", "{"), "}}", "}")
 	for attempt := 0; attempt < 3; attempt++ {
-		raw, e := l.complete(ctx, models, []Object{{"role": "user", "content": prompt}})
+		raw, e := l.complete(ctx, l.TextModels, []Object{{"role": "user", "content": prompt}}, llmOptions{Structured: l.Provider == "zai", WebSearch: true})
 		if e != nil {
 			return nil
 		}
@@ -297,7 +331,7 @@ func (l *LLM) Lookup(ctx context.Context, code string) *Product {
 func (l *LLM) Translate(ctx context.Context, p *Product) bool {
 	prompt := strings.ReplaceAll(strings.ReplaceAll(translatePrompt, "{name}", p.Name), "{brand}", p.Brand)
 	prompt = strings.ReplaceAll(strings.ReplaceAll(prompt, "{{", "{"), "}}", "}")
-	raw, e := l.complete(ctx, l.TextModels, []Object{{"role": "user", "content": prompt}})
+	raw, e := l.complete(ctx, l.TextModels, []Object{{"role": "user", "content": prompt}}, llmOptions{Structured: l.Provider == "zai"})
 	if e != nil {
 		return false
 	}

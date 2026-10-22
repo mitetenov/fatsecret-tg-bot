@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	TelegramToken, ConsumerKey, ConsumerSecret, OpenRouterKey, StateDir, DefaultTZ string
+	LLMProvider, ZAIKey, ZAIReasoningEffort                                        string
 	OwnerID                                                                        int64
 	TextModels, VisionModels                                                       []string
 }
@@ -57,9 +58,36 @@ func LoadDotenv(path string) error {
 	return s.Err()
 }
 func ConfigFromEnv() (Config, error) {
-	c := Config{TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), ConsumerKey: os.Getenv("FATSECRET_CONSUMER_KEY"), ConsumerSecret: os.Getenv("FATSECRET_CONSUMER_SECRET"), OpenRouterKey: os.Getenv("OPENROUTER_API_KEY"), StateDir: envDefault("FSBOT_STATE_DIR", "/data"), DefaultTZ: envDefault("FSBOT_DEFAULT_TZ", "Asia/Tbilisi"), TextModels: splitModels(envDefault("OPENROUTER_TEXT_MODELS", "google/gemini-3.5-flash-lite,openrouter/free")), VisionModels: splitModels(envDefault("OPENROUTER_VISION_MODELS", "google/gemini-3.5-flash-lite,openrouter/free"))}
+	c := Config{
+		TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"), ConsumerKey: os.Getenv("FATSECRET_CONSUMER_KEY"),
+		ConsumerSecret: os.Getenv("FATSECRET_CONSUMER_SECRET"), OpenRouterKey: os.Getenv("OPENROUTER_API_KEY"),
+		StateDir: envDefault("FSBOT_STATE_DIR", "/data"), DefaultTZ: envDefault("FSBOT_DEFAULT_TZ", "Asia/Tbilisi"),
+		LLMProvider: strings.ToLower(strings.TrimSpace(envDefault("LLM_PROVIDER", "openrouter"))),
+		ZAIKey:      os.Getenv("ZAI_API_KEY"),
+	}
+	key := "OPENROUTER_API_KEY"
+	switch c.LLMProvider {
+	case "openrouter":
+		c.TextModels = splitModels(envDefault("OPENROUTER_TEXT_MODELS", "google/gemini-3.5-flash-lite,openrouter/free"))
+		c.VisionModels = splitModels(envDefault("OPENROUTER_VISION_MODELS", "google/gemini-3.5-flash-lite,openrouter/free"))
+	case "zai":
+		key = "ZAI_API_KEY"
+		model := strings.TrimSpace(envDefault("ZAI_MODEL", "glm-5.3-flash"))
+		if model == "" {
+			return c, fmt.Errorf("ZAI_MODEL не должен быть пустым")
+		}
+		c.TextModels, c.VisionModels = []string{model}, []string{model}
+		c.ZAIReasoningEffort = strings.ToLower(strings.TrimSpace(envDefault("ZAI_REASONING_EFFORT", "low")))
+		switch c.ZAIReasoningEffort {
+		case "low", "high", "max":
+		default:
+			return c, fmt.Errorf("ZAI_REASONING_EFFORT должен быть low, high или max")
+		}
+	default:
+		return c, fmt.Errorf("LLM_PROVIDER должен быть openrouter или zai")
+	}
 	var missing []string
-	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "BOT_OWNER_ID", "FATSECRET_CONSUMER_KEY", "FATSECRET_CONSUMER_SECRET", "OPENROUTER_API_KEY"} {
+	for _, k := range []string{"TELEGRAM_BOT_TOKEN", "BOT_OWNER_ID", "FATSECRET_CONSUMER_KEY", "FATSECRET_CONSUMER_SECRET", key} {
 		if os.Getenv(k) == "" {
 			missing = append(missing, k)
 		}
