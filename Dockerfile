@@ -1,7 +1,7 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.28.0
 
 # Build on the host architecture; release binaries are cross-compiled without QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS deps
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS deps
 WORKDIR /app
 ENV GOTOOLCHAIN=local
 # Changing application code keeps the downloaded dependency layer intact.
@@ -48,17 +48,13 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -mod=readonly -trimpath -buildvcs=false \
       -ldflags="-s -w -buildid= -X main.version=$VERSION" -o /out/fsbot ./cmd/fsbot
 
-FROM --platform=$BUILDPLATFORM alpine:3.23 AS assets
+FROM --platform=$BUILDPLATFORM alpine:3.24.3 AS assets
 RUN apk add --no-cache ca-certificates \
  && mkdir -p /rootfs/data /rootfs/etc \
  && chown 10001:10001 /rootfs/data \
  && chmod 700 /rootfs/data \
  && printf 'fsbot:x:10001:10001:fsbot:/data:/sbin/nologin\n' > /rootfs/etc/passwd \
  && printf 'fsbot:x:10001:\n' > /rootfs/etc/group
-
-# SQLite smoke tests only need a shell and their fixture, not the Go SDK.
-FROM assets AS smoke-fixture
-COPY testdata/python-state.sqlite /app/testdata/python-state.sqlite
 
 FROM scratch AS runtime-base
 ENV FSBOT_STATE_DIR=/data

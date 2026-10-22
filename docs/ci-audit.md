@@ -153,3 +153,9 @@ runner'ы сейчас не обоснованы: сами тесты заним
 - [GitHub: обязательные status checks и пропущенные workflow](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
 - [Docker: SBOM и provenance в Actions](https://docs.docker.com/build/ci/github-actions/attestations/).
 - [Go: govulncheck](https://go.dev/doc/tutorial/govulncheck).
+
+Current test scope: integration tests using SQLite, persisted old-state databases,
+and Docker runtime smoke harnesses have been removed by request. CI retains
+isolated domain/mock/HTTP-fake tests, formatting/vet/lint/race, production and
+native Docker builds. Runtime SQLite, bootstrap ownership and health commands
+remain production features. Historical integration results above are archival.

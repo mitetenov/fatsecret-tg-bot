@@ -196,3 +196,19 @@ Actions закреплены по SHA и обновляются Dependabot вм�
 
 Групповые чаты, вес, упражнения, рецепты, аналитика и второй интерфейс дневника
 не поддерживаются.
+
+## Стандарт разработки
+
+Go 1.27.3; Ubuntu 26.04 на нативных amd64/arm64 runners. CI проверяет
+`go mod tidy -diff`, `go mod verify`, форматирование, vet, golangci-lint v2.15.0,
+unit/race-тесты и production-сборку.
+BuildKit выполняет тесты без сети и упаковывает проверенный бинарник; PR и ручная
+проверка не публикуют образы. Dependabot еженедельно проверяет Go, Docker и Actions,
+объединяя minor/patch отдельно от major. Actions закреплены полными SHA.
+Сохранён замороженный JSON-эталон Python для изолированных unit-тестов.
+
+Current test scope: integration tests using SQLite, persisted old-state databases,
+and Docker runtime smoke harnesses have been removed by request. CI retains
+isolated domain/mock/HTTP-fake tests, formatting/vet/lint/race, production and
+native Docker builds. Runtime SQLite, bootstrap ownership and health commands
+remain production features. Historical integration results above are archival.

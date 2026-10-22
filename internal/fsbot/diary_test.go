@@ -6,10 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
-	"reflect"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -121,73 +118,7 @@ func TestReconciliationRequiresUniqueNewExactMatch(t *testing.T) {
 	}
 }
 
-func TestWriteSnapshotSurvivesRestartAndRecordFailure(t *testing.T) {
-	for _, crashState := range []string{"unknown", "writing"} {
-		t.Run(crashState, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "state.sqlite3")
-			s, e := OpenStore(path)
-			if e != nil {
-				t.Fatal(e)
-			}
-			defer s.Close()
-			u := &User{ID: 1}
-			d := readyDraft()
-			d.Items = d.Items[:1]
-			id, e := s.SaveDraft(u.ID, d)
-			if e != nil {
-				t.Fatal(e)
-			}
-			f := &fakeFoods{}
-			var created DiaryEntry
-			f.create = func(_ *Draft, i *Item) (string, error) {
-				stored, e := s.Draft(id, u.ID)
-				if e != nil || stored.Items[0].Status != "writing" || stored.Items[0].EntryWrite == nil || stored.Items[0].EntryWrite.BeforeIDs == nil {
-					t.Fatal("snapshot not durable before request", stored, e)
-				}
-				created = i.EntryWrite.Expected
-				created.ID = "101"
-				return "", unknown("lost response")
-			}
-			persist := func() error { return s.UpdateDraft(id, u.ID, d) }
-			r, e := WriteDraft(context.Background(), f, d, u, persist, func(string) error { t.Fatal("unexpected record"); return nil })
-			if e != nil || len(r.Failed) != 1 || d.Items[0].Status != "unknown" || len(f.calls) != 1 {
-				t.Fatal(r, e)
-			}
-			d.Items[0].Status = crashState
-			if e = persist(); e != nil {
-				t.Fatal(e)
-			}
-			// Restore the persisted attempt through a fresh SQLite connection.
-			reopened, e := OpenStore(path)
-			if e != nil {
-				t.Fatal(e)
-			}
-			defer reopened.Close()
-			d, e = reopened.Draft(id, u.ID)
-			if e != nil {
-				t.Fatal(e)
-			}
-			f.diary = []DiaryEntry{created}
-			persist = func() error { return reopened.UpdateDraft(id, u.ID, d) }
-			_, e = WriteDraft(context.Background(), f, d, u, persist, func(string) error { return errors.New("disk full") })
-			if e == nil {
-				t.Fatal("record failure ignored")
-			}
-			d, e = reopened.Draft(id, u.ID)
-			if e != nil || d.Items[0].Status != crashState {
-				t.Fatal("failed record lost retry state", d, e)
-			}
-			r, e = WriteDraft(context.Background(), f, d, u, persist, func(entry string) error { return reopened.RecordWrite(id, u.ID, d, entry) })
-			if e != nil || !reflect.DeepEqual(r.EntryIDs, []string{"101"}) || len(f.calls) != 1 || d.Items[0].EntryWrite != nil {
-				t.Fatal(r, e, f.calls)
-			}
-			_, ids, e := reopened.ClaimBatch(u.ID)
-			if e != nil || !reflect.DeepEqual(ids, []string{"101"}) {
-				t.Fatal("recovered ID not available to undo", ids, e)
-			}
-		})
-	}
-}
+// Restore the persisted attempt through a fresh SQLite connection.
 
 func TestPreflightFailureNeverSendsWrite(t *testing.T) {
 	for _, failure := range []error{unknown("timeout"), &FSError{9, "revoked"}} {
@@ -206,63 +137,7 @@ func TestPreflightFailureNeverSendsWrite(t *testing.T) {
 	}
 }
 
-func TestCallbackReconcilesSavedEntryWithoutDuplicates(t *testing.T) {
-	for _, mode := range []string{"missing-id", "lost-response", "delayed", "full-diary", "invalid-json"} {
-		t.Run(mode, func(t *testing.T) {
-			h := newHarness(t)
-			h.entryMode = mode
-			if mode == "delayed" {
-				h.entryMode, h.hideNewEntries = "missing-id", true
-			}
-			d := readyDraft()
-			d.Items = d.Items[:1]
-			old := newEntryWrite(d, d.Items[0], nil).Expected
-			old.ID = "100"
-			if mode != "delayed" {
-				h.diary = []Object{diaryObject(old)}
-			}
-			id, e := h.app.Store.SaveDraft(42, d)
-			if e != nil {
-				t.Fatal(e)
-			}
-			h.send(t, h.callback(id, "w", ""))
-			if mode == "delayed" {
-				stored, e := h.app.Store.Draft(id, 42)
-				if e != nil || stored == nil || stored.Items[0].Status != "unknown" {
-					t.Fatal(stored, e)
-				}
-				if DraftKeyboard(id, stored).Rows[0][0].Text != "🔎 Проверить запись" {
-					t.Fatal("check-only action not shown")
-				}
-				// Another failed check must only read. The matching entry appears later.
-				h.send(t, h.callback(id, "w", ""))
-				h.hideNewEntries = false
-				h.send(t, h.callback(id, "w", ""))
-			}
-			h.send(t, h.callback(id, "w", ""))
-			if h.writes != 1 {
-				t.Fatal("duplicate external create", h.writes)
-			}
-			if stored, e := h.app.Store.Draft(id, 42); e != nil || stored != nil {
-				t.Fatal("confirmed draft not finished", stored, e)
-			}
-			success := false
-			for _, call := range h.calls {
-				if call["method"] == "editMessageText" && strings.Contains(str(call["text"]), "✅ A") {
-					success = true
-				}
-			}
-			if !success {
-				t.Fatal("Telegram did not confirm the recovered entry")
-			}
-			h.send(t, h.message("/undo"))
-			h.send(t, h.message("/undo"))
-			if h.deletes != 1 {
-				t.Fatal("undo must delete recovered ID exactly once", h.deletes)
-			}
-		})
-	}
-}
+// Another failed check must only read. The matching entry appears later.
 
 func TestUncertainAttemptCheckedBeforeAnyNewWrites(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
@@ -284,57 +159,6 @@ func TestUncertainAttemptCheckedBeforeAnyNewWrites(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestAmbiguousResultNeverRetriesOrRecordsAnID(t *testing.T) {
-	h := newHarness(t)
-	h.entryMode = "ambiguous"
-	d := readyDraft()
-	d.Items = d.Items[:1]
-	id, e := h.app.Store.SaveDraft(42, d)
-	if e != nil {
-		t.Fatal(e)
-	}
-	for range 3 {
-		h.send(t, h.callback(id, "w", ""))
-	}
-	stored, e := h.app.Store.Draft(id, 42)
-	if e != nil || stored == nil || stored.Items[0].Status != "unknown" || stored.Items[0].EntryID != "" || h.writes != 1 {
-		t.Fatal("ambiguous result was retried or recorded", stored, e, h.writes)
-	}
-	h.send(t, h.message("/undo"))
-	if h.deletes != 0 {
-		t.Fatal("undo selected an ambiguous entry")
-	}
-}
-
-func TestConcurrentCallbacksReconcileOneExternalCreate(t *testing.T) {
-	h := newHarness(t)
-	h.entryMode = "lost-response"
-	d := readyDraft()
-	d.Items = d.Items[:1]
-	id, e := h.app.Store.SaveDraft(42, d)
-	if e != nil {
-		t.Fatal(e)
-	}
-	errors := make(chan error, 2)
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Go(func() { errors <- h.app.Handle(context.Background(), h.callback(id, "w", "")) })
-	}
-	wg.Wait()
-	close(errors)
-	for e := range errors {
-		if e != nil {
-			t.Fatal(e)
-		}
-	}
-	if h.writes != 1 {
-		t.Fatal("concurrent callbacks repeated create", h.writes)
-	}
-	if stored, e := h.app.Store.Draft(id, 42); e != nil || stored != nil {
-		t.Fatal("concurrent confirmation lost", stored, e)
 	}
 }
 

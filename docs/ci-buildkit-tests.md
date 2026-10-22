@@ -68,3 +68,9 @@ sh tools/verify-image.sh fsbot:runtime fsbot:fixture
 Источники: [Docker exporters](https://docs.docker.com/build/exporters/),
 [сохранение cache mounts в GitHub Actions](https://docs.docker.com/build/ci/github-actions/cache/),
 [исходники закреплённого cache-dance](https://github.com/reproducible-containers/buildkit-cache-dance/tree/5422eac04292c961a382e0f584ea0f03ad9da723).
+
+Current test scope: integration tests using SQLite, persisted old-state databases,
+and Docker runtime smoke harnesses have been removed by request. CI retains
+isolated domain/mock/HTTP-fake tests, formatting/vet/lint/race, production and
+native Docker builds. Runtime SQLite, bootstrap ownership and health commands
+remain production features. Historical integration results above are archival.
