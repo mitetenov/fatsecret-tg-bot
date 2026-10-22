@@ -17,3 +17,9 @@ data/
 
 # артефакты сборки пакета
 *.egg-info/
+
+# Go build/test outputs
+/fsbot
+/bin/
+coverage.out
+*.test

@@ -1,6 +1,10 @@
-data/
-.venv/
-.git/
-__pycache__/
-.env
-.pytest_cache/
+# Include only files needed by the build, including the offline test corpus.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!testdata/
+!testdata/**

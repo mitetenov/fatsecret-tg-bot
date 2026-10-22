@@ -1,85 +1,48 @@
-# Мультиплатформенный образ: один тег идёт и на VPS (amd64), и на Raspberry Pi (arm64).
-#
-# База — alpine, а не slim: 107 МБ против 235 МБ. Это безопасно только потому, что все
-# зависимости имеют колёса под musl для обеих архитектур (проверено сборкой под amd64
-# и arm64 — компиляции из исходников нет). Добавляя зависимость без musl-колёс, придётся
-# либо вернуться к slim, либо получить многоминутную сборку на arm64.
-#
-# Стадии:
-#   deps      — venv только с рантайм-зависимостями; слой зависит от pyproject.toml,
-#               поэтому правка исходников его не инвалидирует
-#   test      — deps + pytest + исходники и тесты (в прод не попадает)
-#   prod-venv — тот же venv без pip/setuptools и кешей
-#   runtime   — чистый базовый образ + обрезанный venv + src
+# syntax=docker/dockerfile:1.7
 
-FROM python:3.14-alpine AS deps
-
-ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-
+# Build on the host architecture; release binaries are cross-compiled without QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS deps
 WORKDIR /app
-COPY pyproject.toml ./
+ENV GOTOOLCHAIN=local
+# Changing application code keeps the downloaded dependency layer intact.
+COPY go.mod go.sum ./
+RUN go mod download
 
-# Зависимости читаются из pyproject через tomllib, чтобы не держать второй список
-# в requirements.txt и не расходиться с ним. Сам пакет не ставим: он чисто питонячий
-# и подключается через PYTHONPATH — так в образе нет ни сборки, ни egg-info.
-RUN python -m venv /opt/venv \
- && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))" > /tmp/requirements.txt \
- && /opt/venv/bin/pip install --no-compile -r /tmp/requirements.txt
-
-
-FROM python:3.14-alpine AS zbarlib
-
-# apk-пакет zbar тянет 47 зависимостей (python3, glib, gobject-introspection) — это
-# +127 МБ ради библиотеки в 196 КБ. Забираем только сам .so и его замыкание: ~3 МБ.
-RUN apk add --no-cache zbar \
- && mkdir -p /libs \
- && cp -L $(ldd /usr/lib/libzbar.so.0.3.0 | awk '/=>/ {print $3}') /libs/ \
- && cp -L /usr/lib/libzbar.so.0.3.0 /libs/libzbar.so
-
-
+# Compiler tooling is installed before application sources, so edits reuse this layer.
 FROM deps AS test
+RUN apk add --no-cache build-base
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY testdata/ ./testdata/
+CMD ["go", "test", "-mod=readonly", "-race", "-count=1", "./..."]
 
-COPY --from=zbarlib /libs/ /usr/lib/
-RUN /opt/venv/bin/pip install --no-compile pytest pytest-asyncio
-ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH=/app/src
-COPY src ./src
-COPY tests ./tests
-COPY spike ./spike
-CMD ["python", "-m", "pytest", "-q"]
+FROM deps AS build
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -mod=readonly -trimpath -buildvcs=false \
+      -ldflags="-s -w -buildid= -X main.version=$VERSION" -o /out/fsbot ./cmd/fsbot
 
+FROM --platform=$BUILDPLATFORM alpine:3.23 AS assets
+RUN apk add --no-cache ca-certificates \
+ && mkdir -p /rootfs/data /rootfs/etc \
+ && chown 10001:10001 /rootfs/data \
+ && chmod 700 /rootfs/data \
+ && printf 'fsbot:x:10001:10001:fsbot:/data:/sbin/nologin\n' > /rootfs/etc/passwd \
+ && printf 'fsbot:x:10001:\n' > /rootfs/etc/group
 
-FROM deps AS prod-venv
-
-# pip и setuptools нужны только на сборке; .pyc не пишем, .dist-info оставляем —
-# по ним видно, что и каких версий стоит в образе.
-RUN /opt/venv/bin/pip uninstall -y pip setuptools wheel \
- && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + \
- && find /opt/venv -name '*.pyc' -delete
-
-
-FROM python:3.14-alpine AS runtime
-
-ENV PATH="/opt/venv/bin:$PATH" \
-    PYTHONPATH=/app/src \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    FSBOT_STATE_DIR=/data
-
-# su-exec (10 КБ) нужен, чтобы entrypoint выровнял владельца каталога состояния
-# и уронил привилегии до fsbot. Пользователь и /data создаются до COPY: chown -R
-# после копирования удваивает размер, переписывая все файлы в новый слой.
-RUN apk add --no-cache su-exec \
- && adduser -D -H -u 10001 fsbot \
- && install -d -o fsbot -g fsbot /data
-
-COPY --from=prod-venv /opt/venv /opt/venv
-COPY --from=zbarlib /libs/ /usr/lib/
-
-WORKDIR /app
-COPY --chown=fsbot:fsbot src ./src
-COPY docker-entrypoint.sh /usr/local/bin/
-
-# USER здесь намеренно не задан: entrypoint стартует от root, выравнивает владельца
-# состояния и переключается на fsbot. Бот работает непривилегированным всегда.
-ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["python", "-m", "fsbot"]
+FROM scratch AS runtime
+ENV FSBOT_STATE_DIR=/data
+COPY --from=assets /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=assets /rootfs/ /
+WORKDIR /data
+# The application changes most often, so its layer is last. No sources, SDK or shell.
+COPY --from=build /out/fsbot /fsbot
+# Bootstrap fixes an existing volume's ownership, then drops to uid/gid 10001.
+ENTRYPOINT ["/fsbot"]
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=2 \
+  CMD ["/fsbot", "healthcheck"]
