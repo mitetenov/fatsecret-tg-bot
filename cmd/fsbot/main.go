@@ -49,7 +49,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	secrets := []string{c.TelegramToken, c.ConsumerKey, c.ConsumerSecret, c.OpenRouterKey}
+	secrets := []string{c.TelegramToken, c.ConsumerKey, c.ConsumerSecret, c.OpenRouterKey, c.ZAIKey}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 		if a.Value.Kind() == slog.KindString || a.Key == "error" {
 			v := fmt.Sprint(a.Value.Any())
@@ -72,7 +72,10 @@ func run() error {
 	defer s.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	slog.Info("fsbot", "version", version)
+	slog.Info("fsbot", "version", version,
+		"llm_provider", c.LLMProvider,
+		"text_models", strings.Join(c.TextModels, ","),
+		"vision_models", strings.Join(c.VisionModels, ","))
 	return fsbot.NewApp(c, s).Run(ctx)
 }
 func main() {
