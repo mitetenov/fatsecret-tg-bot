@@ -123,6 +123,7 @@ type Item struct {
 	Carbs           float64         `json:"carbohydrate"`
 	Mismatch        *float64        `json:"mismatch,omitempty"`
 	OwnFoodID       string          `json:"own_food_id,omitempty"`
+	EntryWrite      *EntryWrite     `json:"entry_write,omitempty"`
 }
 
 func (i *Item) Locked() bool {

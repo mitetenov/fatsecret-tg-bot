@@ -21,6 +21,9 @@ type harness struct {
 	fsCalls         []string
 	writes, deletes int
 	createMode      string
+	entryMode       string
+	diary           []Object
+	hideNewEntries  bool
 }
 
 func newHarness(t *testing.T) *harness {
@@ -38,12 +41,54 @@ func newHarness(t *testing.T) *harness {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if r.URL.Path == "/fs" {
-			p := r.URL.Query()
+			r.ParseForm()
+			p := r.Form
 			method := p.Get("method")
 			h.fsCalls = append(h.fsCalls, method)
 			switch method {
+			case "food_entries.get.v2":
+				entries := h.diary
+				if h.hideNewEntries {
+					entries = nil
+				}
+				if entries == nil {
+					entries = []Object{}
+				}
+				json.NewEncoder(w).Encode(Object{"food_entries": Object{"food_entry": entries}})
 			case "food_entry.create":
 				h.writes++
+				h.diary = append(h.diary, Object{"food_entry_id": fmt.Sprint(h.writes), "food_id": p.Get("food_id"), "serving_id": p.Get("serving_id"), "number_of_units": p.Get("number_of_units"), "date_int": p.Get("date"), "meal": p.Get("meal"), "food_entry_name": p.Get("food_entry_name")})
+				if h.entryMode == "lost-response" {
+					conn, _, e := w.(http.Hijacker).Hijack()
+					if e != nil {
+						t.Error(e)
+						return
+					}
+					conn.Close()
+					return
+				}
+				if h.entryMode == "missing-id" {
+					io.WriteString(w, `{}`)
+					return
+				}
+				if h.entryMode == "ambiguous" {
+					another := Object{}
+					for k, v := range h.diary[len(h.diary)-1] {
+						another[k] = v
+					}
+					another["food_entry_id"] = "200"
+					h.diary = append(h.diary, another)
+					io.WriteString(w, `{}`)
+					return
+				}
+				if h.entryMode == "full-diary" {
+					json.NewEncoder(w).Encode(Object{"food_entries": Object{"food_entry": h.diary}})
+					return
+				}
+				if h.entryMode == "invalid-json" {
+					io.WriteString(w, `<html>upstream error</html>`)
+					return
+				}
 				json.NewEncoder(w).Encode(Object{"food_entries": Object{"food_entry": Object{"food_entry_id": fmt.Sprint(h.writes)}}})
 			case "food_entry.delete":
 				h.deletes++

@@ -34,6 +34,12 @@ func DraftKeyboard(id int64, d *Draft) Keyboard {
 	if d.NeedsReview {
 		text, action = "⚠️ Проверить", "r"
 	}
+	for _, i := range d.Items {
+		if (i.Status == "unknown" || i.Status == "writing") && i.EntryWrite != nil {
+			text, action = "🔎 Проверить запись", "w"
+			break
+		}
+	}
 	k := Keyboard{[][]Button{{button(id, action, "", text), button(id, "e", "", "✏️ Изменить"), button(id, "x", "", "❌ Отмена")}}}
 	for p, i := range d.Items {
 		arg := strconv.Itoa(p)

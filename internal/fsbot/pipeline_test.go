@@ -15,6 +15,10 @@ type fakeFoods struct {
 	failure      map[string]error
 	queries      []string
 	autocomplete []string
+	diary        []DiaryEntry
+	diaryError   error
+	reads        int
+	create       func(*Draft, *Item) (string, error)
 }
 
 func (f *fakeFoods) Search(_ context.Context, q string) ([]Candidate, error) {
@@ -30,8 +34,15 @@ func (f *fakeFoods) Food(context.Context, string) (Object, error) {
 	}
 	return f.food, nil
 }
-func (f *fakeFoods) CreateEntry(_ context.Context, _ *User, _ *Draft, i *Item) (string, error) {
+func (f *fakeFoods) Entries(context.Context, *User, string) ([]DiaryEntry, error) {
+	f.reads++
+	return append([]DiaryEntry(nil), f.diary...), f.diaryError
+}
+func (f *fakeFoods) CreateEntry(_ context.Context, _ *User, d *Draft, i *Item) (string, error) {
 	f.calls = append(f.calls, i.FoodID)
+	if f.create != nil {
+		return f.create(d, i)
+	}
 	if e := f.failure[i.FoodID]; e != nil {
 		return "", e
 	}

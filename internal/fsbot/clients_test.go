@@ -25,13 +25,18 @@ func TestFatSecretContracts(t *testing.T) {
 	seen := []url.Values{}
 	response := Object{"food_entries": Object{"food_entry": []Object{{"food_entry_id": "1111111"}}}}
 	server := testHTTP(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
+		r.ParseForm()
+		p := r.Form
+		wantMethod := "GET"
+		if p.Get("method") == "food_entry.create" {
+			wantMethod = "POST"
+		}
+		if r.Method != wantMethod {
 			t.Error(r.Method)
 		}
-		p := r.URL.Query()
 		sig := p.Get("oauth_signature")
 		p.Del("oauth_signature")
-		if OAuthSign("GET", "http://"+r.Host+r.URL.Path, p, "cs", "ts") != sig {
+		if OAuthSign(r.Method, "http://"+r.Host+r.URL.Path, p, "cs", "ts") != sig {
 			t.Error("invalid signature")
 		}
 		seen = append(seen, p)
