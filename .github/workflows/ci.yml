@@ -64,7 +64,10 @@ jobs:
             VERSION=${{ github.sha }}
             CI_TEST_RUN=${{ github.run_id }}-${{ github.run_attempt }}
           cache-from: type=gha,scope=test-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=test-${{ matrix.arch }}
+          # An exact Go key includes the SDK/dependencies and Go sources. Keep
+          # reading these layers without re-uploading the large SDK on every run.
+          # CI_TEST_RUN still forces all tests to execute.
+          cache-to: ${{ steps.go-cache.outputs.cache-hit != 'true' && format('type=gha,mode=max,scope=test-{0}', matrix.arch) || '' }}
       - name: Упаковать проверенный бинарник в production-образ
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
