@@ -8,3 +8,5 @@
 !internal/**
 !testdata/
 !testdata/**
+!.ci-bin/
+!.ci-bin/fsbot

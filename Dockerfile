@@ -35,14 +35,22 @@ RUN apk add --no-cache ca-certificates \
  && printf 'fsbot:x:10001:10001:fsbot:/data:/sbin/nologin\n' > /rootfs/etc/passwd \
  && printf 'fsbot:x:10001:\n' > /rootfs/etc/group
 
-FROM scratch AS runtime
+FROM scratch AS runtime-base
 ENV FSBOT_STATE_DIR=/data
 COPY --from=assets /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=assets /rootfs/ /
 WORKDIR /data
-# The application changes most often, so its layer is last. No sources, SDK or shell.
-COPY --from=build /out/fsbot /fsbot
 # Bootstrap fixes an existing volume's ownership, then drops to uid/gid 10001.
 ENTRYPOINT ["/fsbot"]
 HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=2 \
   CMD ["/fsbot", "healthcheck"]
+
+# CI compiles once in the tested native container and only packages its binary.
+# Keep the rootfs identical to a regular source build.
+FROM runtime-base AS ci-runtime
+COPY .ci-bin/fsbot /fsbot
+
+# Default target: standalone source builds keep working without CI artifacts.
+FROM runtime-base AS runtime
+# The application changes most often, so its layer is last. No sources, SDK or shell.
+COPY --from=build /out/fsbot /fsbot
