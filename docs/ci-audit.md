@@ -1,5 +1,10 @@
 # Аудит CI — 23 октября 2026
 
+После этого аудита экспорт SDK-образа в CI заменён на выполнение проверок
+в BuildKit и экспорт бинарника. Текущий путь описан в
+[ci-buildkit-tests.md](ci-buildkit-tests.md); исходные замеры ниже сохранены
+для сравнения.
+
 Проверены весь `.github/workflows/ci.yml`, Dockerfile, build context,
 `tools/verify-image.sh`, Go-тесты, последние запуски Actions и состояние `main`
 через GitHub API. На момент проверки локальный HEAD совпадал с удалённым

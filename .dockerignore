@@ -8,5 +8,7 @@
 !internal/**
 !testdata/
 !testdata/**
+!tools/
+!tools/ci-go.sh
 !.ci-bin/
 !.ci-bin/fsbot
