@@ -6,15 +6,36 @@ WORKDIR /app
 ENV GOTOOLCHAIN=local
 # Changing application code keeps the downloaded dependency layer intact.
 COPY go.mod go.sum ./
-RUN go mod download
+# Sources and checksum metadata are enough for offline builds; do not keep ZIP
+# duplicates in the dependency layer transferred to each native CI builder.
+RUN go mod download \
+ && find /go/pkg/mod/cache/download -type f -name '*.zip' -delete
 
 # Compiler tooling is installed before application sources, so edits reuse this layer.
 FROM deps AS test
-RUN apk add --no-cache build-base
+RUN apk add --no-cache gcc musl-dev
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY testdata/ ./testdata/
 CMD ["go", "test", "-mod=readonly", "-race", "-count=1", "./..."]
+
+# CI runs in BuildKit and exports only the release binary, never the SDK image.
+FROM test AS ci-test
+ENV GOCACHE=/go-build GOPROXY=off GOSUMDB=off
+COPY tools/ci-go.sh /ci-go.sh
+RUN mkdir -p /out && chown 10001:10001 /out
+USER 10001:10001
+ARG VERSION=dev
+ARG CI_TEST_RUN
+ARG TARGETARCH
+# A unique run/attempt forces real tests even when the source layers are cached.
+RUN --network=none \
+    --mount=type=cache,target=/go-build,uid=10001,gid=10001 \
+    test "$(go env GOARCH)" = "$TARGETARCH" \
+    && test -n "$CI_TEST_RUN" && sh /ci-go.sh
+
+FROM scratch AS ci-artifacts
+COPY --from=ci-test /out/fsbot /fsbot
 
 FROM deps AS build
 COPY cmd/ ./cmd/
@@ -34,6 +55,10 @@ RUN apk add --no-cache ca-certificates \
  && chmod 700 /rootfs/data \
  && printf 'fsbot:x:10001:10001:fsbot:/data:/sbin/nologin\n' > /rootfs/etc/passwd \
  && printf 'fsbot:x:10001:\n' > /rootfs/etc/group
+
+# SQLite smoke tests only need a shell and their fixture, not the Go SDK.
+FROM assets AS smoke-fixture
+COPY testdata/python-state.sqlite /app/testdata/python-state.sqlite
 
 FROM scratch AS runtime-base
 ENV FSBOT_STATE_DIR=/data

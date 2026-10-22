@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run inside the native test image, with persistent GOCACHE and an /out bind mount.
+# Run in the native test environment, with persistent GOCACHE and writable /out.
 set -eu
 : "${VERSION:?VERSION must identify the tested commit}"
 
