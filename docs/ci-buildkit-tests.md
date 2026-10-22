@@ -1,3 +1,7 @@
+> Текущий scope: только unit/mock/race и production/Docker build; SQLite,
+> runtime smoke, smoke-fixture и verify-image.sh удалены. Ниже сохранена
+> историческая запись прежнего CI. Актуальные команды — в README.md.
+
 # Тесты CI внутри BuildKit
 
 Нативная матрица AMD64/ARM64 сохранена. Вместо экспорта всего `test` image в
