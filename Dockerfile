@@ -6,11 +6,14 @@ WORKDIR /app
 ENV GOTOOLCHAIN=local
 # Changing application code keeps the downloaded dependency layer intact.
 COPY go.mod go.sum ./
-RUN go mod download
+# Sources and checksum metadata are enough for offline builds; do not keep ZIP
+# duplicates in the dependency layer transferred to each native CI builder.
+RUN go mod download \
+ && find /go/pkg/mod/cache/download -type f -name '*.zip' -delete
 
 # Compiler tooling is installed before application sources, so edits reuse this layer.
 FROM deps AS test
-RUN apk add --no-cache build-base
+RUN apk add --no-cache gcc musl-dev
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY testdata/ ./testdata/
