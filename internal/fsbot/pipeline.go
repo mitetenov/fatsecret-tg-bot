@@ -16,6 +16,7 @@ type Foods interface {
 	Autocomplete(context.Context, string) ([]string, error)
 	Food(context.Context, string) (Object, error)
 	CreateEntry(context.Context, *User, *Draft, *Item) (string, error)
+	Entries(context.Context, *User, string) ([]DiaryEntry, error)
 }
 
 func ApplyCandidate(ctx context.Context, fs Foods, i *Item, chosen int) error {
@@ -225,6 +226,39 @@ type WriteReport struct {
 // The status is committed before the external write. An unconfirmed result is never retried.
 func WriteDraft(ctx context.Context, fs Foods, d *Draft, u *User, persist func() error, record func(string) error) (WriteReport, error) {
 	r := WriteReport{}
+	confirm := func(i *Item, id string) error {
+		i.Status, i.EntryID, i.Error, i.EntryWrite = "written", id, "", nil
+		if e := record(id); e != nil {
+			return e
+		}
+		r.Written = append(r.Written, first(i.Title, i.Name))
+		r.EntryIDs = append(r.EntryIDs, id)
+		return nil
+	}
+	unconfirmed := func(i *Item, e error) {
+		reason := "не удалось подтвердить запись; проверь дневник FatSecret"
+		if i.EntryWrite != nil {
+			reason += " или нажми «Проверить запись» позже"
+		}
+		r.Failed = append(r.Failed, [2]string{first(i.Title, i.Name), reason})
+		var fe *FSError
+		r.TokenInvalid = errors.As(e, &fe) && fe.TokenInvalid()
+	}
+	// Reconcile old attempts before sending any new writes. Otherwise an earlier
+	// retryable item could be mistaken for a later item's unconfirmed result.
+	for _, i := range d.Items {
+		if i.Status != "writing" && i.Status != "unknown" {
+			continue
+		}
+		id, e := reconcileEntry(ctx, fs, u, i)
+		if e != nil {
+			unconfirmed(i, e)
+			return r, nil
+		}
+		if e = confirm(i, id); e != nil {
+			return r, e
+		}
+	}
 	for _, i := range d.Items {
 		if i.Status == "written" || i.Status == "undone" {
 			continue
@@ -246,6 +280,18 @@ func WriteDraft(ctx context.Context, fs Foods, d *Draft, u *User, persist func()
 			fail("не удалось определить порцию")
 			continue
 		}
+		before, e := fs.Entries(ctx, u, d.Day)
+		if e != nil {
+			i.Error = e.Error()
+			fail("не удалось проверить дневник FatSecret; запись не отправлена")
+			var fe *FSError
+			r.TokenInvalid = errors.As(e, &fe) && fe.TokenInvalid()
+			if e = persist(); e != nil {
+				return r, e
+			}
+			break
+		}
+		i.EntryWrite = newEntryWrite(d, i, before)
 		i.Status = "writing"
 		if e := persist(); e != nil {
 			return r, e
@@ -256,6 +302,7 @@ func WriteDraft(ctx context.Context, fs Foods, d *Draft, u *User, persist func()
 			var fe *FSError
 			if errors.As(e, &fe) {
 				i.Status = "failed"
+				i.EntryWrite = nil
 				fail(fe.Message)
 				if e = persist(); e != nil {
 					return r, e
@@ -267,20 +314,18 @@ func WriteDraft(ctx context.Context, fs Foods, d *Draft, u *User, persist func()
 				continue
 			}
 			i.Status = "unknown"
-			fail("неизвестно, записал ли FatSecret позицию")
 			if e = persist(); e != nil {
 				return r, e
 			}
-			break
+			id, e = reconcileEntry(ctx, fs, u, i)
+			if e != nil {
+				unconfirmed(i, e)
+				break
+			}
 		}
-		i.Status = "written"
-		i.EntryID = id
-		i.Error = ""
-		if e = record(id); e != nil {
+		if e = confirm(i, id); e != nil {
 			return r, e
 		}
-		r.Written = append(r.Written, first(i.Title, i.Name))
-		r.EntryIDs = append(r.EntryIDs, id)
 	}
 	return r, nil
 }

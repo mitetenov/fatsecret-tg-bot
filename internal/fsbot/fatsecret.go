@@ -94,19 +94,38 @@ func (f *FatSecret) signed(method, endpoint string, p url.Values, token, secret 
 	return out, nil
 }
 func (f *FatSecret) Call(ctx context.Context, method, token, secret string, params Object) (Object, error) {
+	httpMethod := http.MethodGet
+	if method == "food_entry.create" {
+		// GET may be replayed by net/http after a lost response on a reused connection.
+		httpMethod = http.MethodPost
+	}
 	p := url.Values{"method": {method}, "format": {"json"}}
 	for k, v := range params {
 		p.Set(k, str(v))
 	}
-	p, e := f.signed("GET", f.API, p, token, secret)
+	p, e := f.signed(httpMethod, f.API, p, token, secret)
 	if e != nil {
 		return nil, e
 	}
-	req, e := http.NewRequestWithContext(ctx, "GET", f.API+"?"+p.Encode(), nil)
+	endpoint := f.API
+	var body io.Reader
+	if httpMethod == http.MethodPost {
+		body = strings.NewReader(p.Encode())
+	} else {
+		endpoint += "?" + p.Encode()
+	}
+	req, e := http.NewRequestWithContext(ctx, httpMethod, endpoint, body)
 	if e != nil {
 		return nil, e
 	}
-	r, e := f.HTTP.Do(req)
+	client := f.HTTP
+	if httpMethod == http.MethodPost {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		copy := *client
+		copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client = &copy
+	}
+	r, e := client.Do(req)
 	if e != nil {
 		return nil, unknown("Нет подтверждённого ответа FatSecret (сеть или таймаут)")
 	}
