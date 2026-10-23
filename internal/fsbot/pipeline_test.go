@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"testing"
 )
 
@@ -51,53 +50,7 @@ func (f *fakeFoods) CreateEntry(_ context.Context, _ *User, d *Draft, i *Item) (
 func readyDraft() *Draft {
 	return &Draft{Day: "2026-09-28", Meal: "lunch", Items: []*Item{{Name: "A", FoodID: "a", ServingID: "1", Units: 1, Status: "pending"}, {Name: "B", FoodID: "b", ServingID: "2", Units: 1, Status: "pending"}}}
 }
-func TestWriteRecoveryAndUndo(t *testing.T) {
-	s, e := OpenStore(filepath.Join(t.TempDir(), "state.sqlite3"))
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer s.Close()
-	u := &User{ID: 1}
-	d := readyDraft()
-	id, e := s.SaveDraft(u.ID, d)
-	if e != nil {
-		t.Fatal(e)
-	}
-	f := &fakeFoods{failure: map[string]error{"b": unknown("timeout")}}
-	persist := func() error { return s.UpdateDraft(id, u.ID, d) }
-	record := func(entry string) error { return s.RecordWrite(id, u.ID, d, entry) }
-	r, e := WriteDraft(context.Background(), f, d, u, persist, record)
-	if e != nil || len(r.EntryIDs) != 1 || d.Items[1].Status != "unknown" {
-		t.Fatal(r, e)
-	}
-	d, e = s.Draft(id, u.ID)
-	if e != nil {
-		t.Fatal(e)
-	}
-	delete(f.failure, "b")
-	r, e = WriteDraft(context.Background(), f, d, u, persist, record)
-	if e != nil || len(r.EntryIDs) != 0 || len(f.calls) != 2 {
-		t.Fatal("unsafe retry", r, e, f.calls)
-	}
-	batch, ids, e := s.ClaimBatch(u.ID)
-	if e != nil || len(ids) != 1 || ids[0] != "entry-a" {
-		t.Fatal(ids, e)
-	}
-	if e = s.RecordUndo(batch, u.ID, ids[0]); e != nil {
-		t.Fatal(e)
-	}
-	if e = s.ReleaseBatch(batch, u.ID); e != nil {
-		t.Fatal(e)
-	}
-	d, e = s.Draft(id, u.ID)
-	if e != nil || d.Items[0].Status != "undone" {
-		t.Fatal(d, e)
-	}
-	r, e = WriteDraft(context.Background(), f, d, u, persist, record)
-	if e != nil || len(r.EntryIDs) != 0 || len(f.calls) != 2 {
-		t.Fatal("undone repeated", r, e)
-	}
-}
+
 func TestWriteKnownFailureRetryAndToken(t *testing.T) {
 	for _, code := range []int{9, 12} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {

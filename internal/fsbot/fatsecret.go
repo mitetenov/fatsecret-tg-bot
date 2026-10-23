@@ -28,7 +28,7 @@ func OAuthBase(method, endpoint string, params url.Values) string {
 	scheme := strings.ToLower(u.Scheme)
 	host := strings.ToLower(u.Hostname())
 	port := u.Port()
-	if port != "" && !(port == "80" && scheme == "http" || port == "443" && scheme == "https") {
+	if port != "" && (port != "80" || scheme != "http") && (port != "443" || scheme != "https") {
 		host += ":" + port
 	}
 	path := u.EscapedPath()

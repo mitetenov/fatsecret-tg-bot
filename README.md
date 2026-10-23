@@ -138,20 +138,19 @@ docker run --rm -v fatsecret-tg-bot_fsbot-data:/data:ro -v "$PWD:/backup" \
 
 ## Сборка и тесты
 
-Нужен Go 1.27. Docker собирает обе архитектуры на платформе сборщика без QEMU:
+Нужен Go 1.27.3. Docker собирает обе архитектуры на платформе сборщика без QEMU:
 
 ```sh
 go test -race ./...
 go vet ./...
 go build -trimpath -ldflags='-s -w' -o bin/fsbot ./cmd/fsbot
 
-# Тесты в контейнере без внешней сети, включая локальные HTTP-сервисы и SQLite:
+# Изолированные unit/mock-тесты в контейнере без внешней сети:
 docker build --target test -t fsbot:test .
 docker run --rm --network none fsbot:test
 
-# Production smoke test в отдельном временном томе, без ключей:
+# Production-сборка без запуска runtime:
 docker build -t fsbot:runtime .
-sh tools/verify-image.sh fsbot:runtime
 
 # Один тег для VPS и Raspberry Pi:
 docker buildx build --platform linux/amd64,linux/arm64 \
@@ -164,10 +163,10 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 содержит сертификаты CA, каталог
 состояния и статический бинарник; база часовых поясов встроена в бинарник. Самый
 изменчивый слой с бинарником идёт последним. SDK, тесты, Python, zbar и пакетный
-менеджер в production не попадают. CI проверяет форматирование, `vet`, гонки,
-совместимость, запуск SQLite и healthcheck до публикации образа.
-CI параллельно собирает и проверяет AMD64 на `ubuntu-24.04`, а ARM64 на
-`ubuntu-24.04-arm`, нативно и без QEMU. Кеши разделены по архитектурам. В CI target
+менеджер в production не попадают. CI проверяет модули, форматирование, `vet`, lint, изолированные unit/race-тесты
+и production-сборку до публикации образа.
+CI параллельно собирает и проверяет AMD64 на `ubuntu-26.04`, а ARM64 на
+`ubuntu-26.04-arm`, нативно и без QEMU. Кеши разделены по архитектурам. В CI target
 `ci-artifacts` выполняет `tools/ci-go.sh` прямо внутри BuildKit: форматирование,
 `vet`, `-race -count=1` и сборку статического бинарника. Проверки работают с
 `--network=none` под uid/gid 10001. Уникальный `CI_TEST_RUN` из номера запуска и
@@ -179,20 +178,35 @@ CI параллельно собирает и проверяет AMD64 на `ubu
 `actions/cache`. Совместимые записи Go восстанавливаются и при изменении
 Dockerfile; Go сам проверяет версию компилятора, флаги и зависимости в ключах
 своего кеша. Target `ci-runtime` упаковывает бинарник в тот же rootfs, что и
-обычная сборка. Для SQLite smoke test используется небольшой `smoke-fixture`
-на Alpine с той же Python-базой. Обычные `docker build .` и `--target test`
+обычная сборка. SQLite/runtime smoke-тесты и их fixture stage удалены.
+Обычные `docker build .` и `--target test`
 продолжают работать самостоятельно. Детали — в [описании BuildKit CI](docs/ci-buildkit-tests.md).
 
-После проверки версии, SQLite, прав тома и healthcheck образ отправляется по
+После успешных unit/race-тестов и production-сборки образ отправляется по
 digest. Успех обеих job разрешает публикацию manifest с SHA коммита; `latest`
 обновляется только после проверки обеих архитектур. Устаревшие запуски PR
 отменяются; публикация из `main` завершается, а новые push ожидают её.
 Actions закреплены по SHA и обновляются Dependabot вместе с Go- и Docker-зависимостями.
 Замеры, ограничения и следующие улучшения описаны в [аудите CI](docs/ci-audit.md).
 
-`/fsbot check` проверяет SQLite и права каталога без сети;
 `/fsbot healthcheck` проверяет свежесть heartbeat; `/fsbot version` выводит версию
-сборки. `check` предназначен для отдельного тестового тома.
+сборки.
 
 Групповые чаты, вес, упражнения, рецепты, аналитика и второй интерфейс дневника
 не поддерживаются.
+
+## Стандарт разработки
+
+Go 1.27.3; Ubuntu 26.04 на нативных amd64/arm64 runners. CI проверяет
+`go mod tidy -diff`, `go mod verify`, форматирование, vet, golangci-lint v2.15.0,
+unit/race-тесты и production-сборку.
+BuildKit выполняет тесты без сети и упаковывает проверенный бинарник; PR и ручная
+проверка не публикуют образы. Dependabot еженедельно проверяет Go, Docker и Actions,
+объединяя minor/patch отдельно от major. Actions закреплены полными SHA.
+Сохранён замороженный JSON-эталон Python для изолированных unit-тестов.
+
+Current test scope: integration tests using SQLite, persisted old-state databases,
+and Docker runtime smoke harnesses have been removed by request. CI retains
+isolated domain/mock/HTTP-fake tests, formatting/vet/lint/race, production and
+native Docker builds. Runtime SQLite, bootstrap ownership and health commands
+remain production features. Historical integration results above are archival.

@@ -48,3 +48,9 @@ Python, zbar, shell и пакетного менеджера. Часовые п�
 в эту проверку не входили. GitHub Actions обновлён, но удалённый CI ещё не запускался.
 
 Команды воспроизведения и перехода с Python находятся в [README](../README.md).
+
+Current test scope: integration tests using SQLite, persisted old-state databases,
+and Docker runtime smoke harnesses have been removed by request. CI retains
+isolated domain/mock/HTTP-fake tests, formatting/vet/lint/race, production and
+native Docker builds. Runtime SQLite, bootstrap ownership and health commands
+remain production features. Historical integration results above are archival.

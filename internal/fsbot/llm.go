@@ -74,9 +74,10 @@ func ParseRecognition(raw string) (Recognition, error) {
 			continue
 		}
 		def := .8
-		if r.Kind == "label" {
+		switch r.Kind {
+		case "label":
 			def = .6
-		} else if r.Kind == "plate" {
+		case "plate":
 			def = .55
 		}
 		confidence, ok := number(m["confidence"])
@@ -100,7 +101,7 @@ func ParseRecognition(raw string) (Recognition, error) {
 	barcode := str(p["barcode"])
 	valid := true
 	for _, c := range barcode {
-		if !(c >= '0' && c <= '9' || c == ' ' || c == '-') {
+		if (c < '0' || c > '9') && c != ' ' && c != '-' {
 			valid = false
 		}
 	}
