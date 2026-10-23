@@ -53,7 +53,8 @@ func (f *FatSecret) Entries(ctx context.Context, u *User, day string) ([]DiaryEn
 	if !ok {
 		return nil, unknown("FatSecret не вернул дневник")
 	}
-	if raw == "" {
+	// FatSecret returns an explicit null envelope when the diary is empty.
+	if raw == nil || raw == "" {
 		return []DiaryEntry{}, nil
 	}
 	envelope, ok := raw.(map[string]any)
