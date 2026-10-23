@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -31,9 +33,14 @@ func TestDiaryResponseContracts(t *testing.T) {
 		{"empty-array", Object{"food_entries": Object{"food_entry": []Object{}}}, 0, false},
 		{"empty-object", Object{"food_entries": Object{}}, 0, false},
 		{"empty-string", Object{"food_entries": ""}, 0, false},
+		{"empty-null", Object{"food_entries": nil}, 0, false},
 		{"absent", Object{}, 0, true},
-		{"null", Object{"food_entries": nil}, 0, true},
 		{"wrong-envelope", Object{"food_entries": []Object{valid}}, 0, true},
+		{"empty-envelope-array", Object{"food_entries": []Object{}}, 0, true},
+		{"nonempty-envelope-string", Object{"food_entries": "unavailable"}, 0, true},
+		{"boolean-envelope", Object{"food_entries": false}, 0, true},
+		{"numeric-envelope", Object{"food_entries": 0}, 0, true},
+		{"null-entry-list", Object{"food_entries": Object{"food_entry": nil}}, 0, true},
 		{"wrong-list", Object{"food_entries": Object{"food_entry": ""}}, 0, true},
 		{"missing-id", Object{"food_entries": Object{"food_entry": Object{"food_id": "a"}}}, 0, true},
 		{"invalid-id", Object{"food_entries": Object{"food_entry": Object{"food_entry_id": Object{"value": "101"}}}}, 0, true},
@@ -55,6 +62,133 @@ func TestDiaryResponseContracts(t *testing.T) {
 			}
 			if len(entries) == 1 && entries[0].Meal != "lunch" {
 				t.Fatal("meal casing not normalized")
+			}
+		})
+	}
+}
+
+func TestWriteDraftWithNullDiary(t *testing.T) {
+	for _, confirmed := range []bool{true, false} {
+		t.Run(fmt.Sprintf("confirmed=%t", confirmed), func(t *testing.T) {
+			d := readyDraft()
+			d.Items = d.Items[:1]
+			entry := newEntryWrite(d, d.Items[0], nil).Expected
+			entry.ID = "101"
+			var reads, creates atomic.Int32
+			var saved, visible atomic.Bool
+			server := testHTTP(t, func(w http.ResponseWriter, r *http.Request) {
+				if e := r.ParseForm(); e != nil {
+					t.Error(e)
+				}
+				switch r.Form.Get("method") {
+				case "food_entries.get.v2":
+					reads.Add(1)
+					if visible.Load() {
+						json.NewEncoder(w).Encode(Object{"food_entries": Object{"food_entry": []Object{diaryObject(entry)}}})
+					} else {
+						io.WriteString(w, `{"food_entries":null}`)
+					}
+				case "food_entry.create":
+					creates.Add(1)
+					if r.Method != http.MethodPost || !saved.Load() {
+						t.Error("write sent before persisting the empty diary snapshot")
+					}
+					if confirmed {
+						io.WriteString(w, `{"food_entries":{"food_entry":{"food_entry_id":"101"}}}`)
+					} else {
+						io.WriteString(w, `{}`)
+					}
+				default:
+					t.Error("unexpected FatSecret method")
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			})
+			f := NewFatSecret("key", "secret")
+			f.API = server.URL
+			var persisted []byte
+			persist := func() error {
+				a := d.Items[0].EntryWrite
+				if a == nil || a.BeforeIDs == nil || len(a.BeforeIDs) != 0 {
+					t.Fatal("empty diary snapshot must be retained", a)
+				}
+				var e error
+				persisted, e = json.Marshal(d)
+				saved.Store(e == nil)
+				return e
+			}
+			recorded := []string{}
+			write := func() WriteReport {
+				t.Helper()
+				r, e := WriteDraft(context.Background(), f, d, &User{}, persist, func(id string) error {
+					recorded = append(recorded, id)
+					return nil
+				})
+				if e != nil {
+					t.Fatal(e)
+				}
+				return r
+			}
+			r := write()
+			if !confirmed {
+				if len(r.Failed) != 1 || len(r.Written) != 0 || len(recorded) != 0 || d.Items[0].Status != "unknown" || reads.Load() != 2 {
+					t.Fatal("unconfirmed write must remain blocked", r, d.Items[0])
+				}
+				// Restore the saved empty snapshot, as after a restart.
+				d = &Draft{}
+				if e := json.Unmarshal(persisted, d); e != nil {
+					t.Fatal(e)
+				}
+				r = write()
+				if len(r.Failed) != 1 || creates.Load() != 1 || reads.Load() != 3 || len(recorded) != 0 {
+					t.Fatal("null diary must not replay or confirm an uncertain write", r)
+				}
+				visible.Store(true)
+				r = write()
+			}
+			if len(r.Failed) != 0 || len(r.Written) != 1 || d.Items[0].Status != "written" || d.Items[0].EntryID != "101" || len(recorded) != 1 || recorded[0] != "101" || creates.Load() != 1 {
+				t.Fatal("entry was not confirmed exactly once", r, d.Items[0], recorded)
+			}
+			before := reads.Load()
+			r = write()
+			if len(r.Written) != 0 || len(r.Failed) != 0 || creates.Load() != 1 || reads.Load() != before || len(recorded) != 1 {
+				t.Fatal("confirmed entry was replayed", r)
+			}
+		})
+	}
+}
+
+func TestInvalidDiaryResponseNeverSendsWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"absent-envelope", 200, `{}`},
+		{"array-envelope", 200, `{"food_entries":[]}`},
+		{"null-entry-list", 200, `{"food_entries":{"food_entry":null}}`},
+		{"null-response", 200, `null`},
+		{"invalid-json", 200, `{"food_entries":`},
+		{"api-error", 200, `{"error":{"code":"1","message":"unavailable"},"food_entries":null}`},
+		{"http-error", 500, `{"food_entries":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var creates atomic.Int32
+			server := testHTTP(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost {
+					creates.Add(1)
+				}
+				w.WriteHeader(tc.status)
+				io.WriteString(w, tc.body)
+			})
+			f := NewFatSecret("key", "secret")
+			f.API = server.URL
+			d := readyDraft()
+			r, e := WriteDraft(context.Background(), f, d, &User{}, func() error { return nil }, func(string) error {
+				t.Error("recorded a write after a failed diary check")
+				return nil
+			})
+			if e != nil || len(r.Failed) != 1 || len(r.Written) != 0 || creates.Load() != 0 || d.Items[0].Status != "pending" || d.Items[0].EntryWrite != nil {
+				t.Fatal("invalid diary response allowed a write", r, e, d.Items[0])
 			}
 		})
 	}
