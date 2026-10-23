@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -27,20 +26,6 @@ func run() error {
 			return nil
 		case "healthcheck":
 			return fsbot.Healthcheck(dir)
-		case "check":
-			if e := fsbot.Bootstrap(dir); e != nil {
-				return e
-			}
-			store, e := fsbot.OpenStore(filepath.Join(dir, "fsbot.sqlite3"))
-			if e != nil {
-				return e
-			}
-			defer store.Close()
-			if e = fsbot.Heartbeat(filepath.Join(dir, "heartbeat")); e != nil {
-				return e
-			}
-			fmt.Printf("SQLite, права на каталог и heartbeat: OK (uid=%d gid=%d)\n", os.Getuid(), os.Getgid())
-			return nil
 		default:
 			return fmt.Errorf("неизвестная команда: %s", os.Args[1])
 		}
