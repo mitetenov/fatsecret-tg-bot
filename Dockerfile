@@ -48,7 +48,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -mod=readonly -trimpath -buildvcs=false \
       -ldflags="-s -w -buildid= -X main.version=$VERSION" -o /out/fsbot ./cmd/fsbot
 
-FROM --platform=$BUILDPLATFORM alpine:3.24.3 AS assets
+FROM --platform=$BUILDPLATFORM alpine:3.24.4 AS assets
 RUN apk add --no-cache ca-certificates \
  && mkdir -p /rootfs/data /rootfs/etc \
  && chown 10001:10001 /rootfs/data \
