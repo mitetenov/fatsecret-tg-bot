@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.28.0
 
 # Build on the host architecture; release binaries are cross-compiled without QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS deps
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine3.24 AS deps
 WORKDIR /app
 ENV GOTOOLCHAIN=local
 # Changing application code keeps the downloaded dependency layer intact.
@@ -48,7 +48,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -mod=readonly -trimpath -buildvcs=false \
       -ldflags="-s -w -buildid= -X main.version=$VERSION" -o /out/fsbot ./cmd/fsbot
 
-FROM --platform=$BUILDPLATFORM alpine:3.24.3 AS assets
+FROM --platform=$BUILDPLATFORM alpine:3.24.4 AS assets
 RUN apk add --no-cache ca-certificates \
  && mkdir -p /rootfs/data /rootfs/etc \
  && chown 10001:10001 /rootfs/data \
